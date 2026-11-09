@@ -1,0 +1,16 @@
+# Cloud credentials and private keys
+clouds.yaml
+passwords.yml
+*.pem
+*.key
+.env
+
+# Terraform state and working files
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Local evidence and editor artifacts
+/evidence/
+*.swp

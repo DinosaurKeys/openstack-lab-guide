@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title id="title">OpenStack floating IP and outbound traffic flows</title>
+  <desc id="desc">Conceptual traffic flows for a virtual machine on private subnet 10.254.211.0/24. A home-LAN client connects to a floating IP from 192.168.0.151 through 192.168.0.199; the Neutron router translates it to the VM fixed IP and security group rules must allow the traffic. Return traffic reverses the translation. Separately, outbound VM traffic can use router source NAT without a floating IP, if configured. The provider network is the home LAN 192.168.0.0/24, with gateway 192.168.0.1 and a separate API VIP 192.168.0.150. These are private addresses, and internet reachability is not implied.</desc>
+  <defs>
+    <marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3268b3"/></marker>
+    <marker id="teal-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#188878"/></marker>
+    <marker id="grey-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8ba0"/></marker>
+  </defs>
+  <rect width="1200" height="820" rx="20" fill="#f7f9fc"/>
+  <g font-family="Inter, Arial, sans-serif" fill="#172b45">
+    <text x="48" y="55" font-size="30" font-weight="700">Floating IPs and outbound access</text>
+    <text x="48" y="84" font-size="17" fill="#53677f">Two different paths through a conceptual Neutron router</text>
+    <rect x="48" y="113" width="1104" height="68" rx="14" fill="#e8f5f3" stroke="#80c3b8" stroke-width="2"/>
+    <text x="70" y="141" font-size="17" font-weight="700" fill="#155c54">Provider network = home LAN  192.168.0.0/24</text>
+    <text x="70" y="165" font-size="15" fill="#365b59">Gateway 192.168.0.1  ·  API VIP 192.168.0.150  ·  FIP pool 192.168.0.151–192.168.0.199</text>
+    <!-- Inbound panel -->
+    <rect x="48" y="205" width="1104" height="248" rx="16" fill="#fff" stroke="#d4dfec" stroke-width="2"/>
+    <circle cx="79" cy="237" r="16" fill="#3268b3"/><text x="74" y="243" font-size="16" font-weight="700" fill="#fff">1</text>
+    <text x="107" y="244" font-size="20" font-weight="700">Inbound: connect to a floating IP</text>
+    <rect x="74" y="286" width="220" height="88" rx="11" fill="#f0f5fd" stroke="#aac2e5"/>
+    <text x="94" y="317" font-size="17" font-weight="700">Home-LAN client</text><text x="94" y="345" font-size="15" fill="#53677f">Targets assigned FIP</text>
+    <rect x="407" y="276" width="286" height="108" rx="11" fill="#fff6e5" stroke="#e9c580"/>
+    <text x="427" y="307" font-size="17" font-weight="700">Neutron router</text><text x="427" y="333" font-size="15" fill="#53677f">FIP → VM fixed IP (DNAT)</text><text x="427" y="358" font-size="15" fill="#53677f">Return: reverse translation</text>
+    <rect x="810" y="276" width="310" height="108" rx="11" fill="#edf1ff" stroke="#b8c4ef"/>
+    <text x="830" y="307" font-size="17" font-weight="700">VM on 10.254.211.0/24</text><text x="830" y="333" font-size="15" fill="#53677f">Uses a fixed private IP</text><text x="830" y="358" font-size="15" fill="#a04862">Security group must allow traffic</text>
+    <path d="M 300 315 H 395" fill="none" stroke="#3268b3" stroke-width="3" marker-end="url(#blue-arrow)"/><path d="M 700 315 H 798" fill="none" stroke="#3268b3" stroke-width="3" marker-end="url(#blue-arrow)"/>
+    <path d="M 404 348 H 307" fill="none" stroke="#7b8ba0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#grey-arrow)"/><path d="M 806 348 H 707" fill="none" stroke="#7b8ba0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#grey-arrow)"/>
+    <text x="74" y="423" font-size="15" fill="#53677f">The FIP is associated with a VM port; security group rules and routing determine whether a connection succeeds.</text>
+    <!-- outbound panel -->
+    <rect x="48" y="477" width="1104" height="210" rx="16" fill="#fff" stroke="#d4dfec" stroke-width="2"/>
+    <circle cx="79" cy="509" r="16" fill="#188878"/><text x="74" y="515" font-size="16" font-weight="700" fill="#fff">2</text>
+    <text x="107" y="516" font-size="20" font-weight="700">Outbound: a floating IP is not required</text>
+    <rect x="74" y="551" width="230" height="80" rx="11" fill="#edf1ff" stroke="#b8c4ef"/>
+    <text x="94" y="582" font-size="17" font-weight="700">VM fixed private IP</text><text x="94" y="608" font-size="15" fill="#53677f">Subnet: 10.254.211.0/24</text>
+    <rect x="421" y="541" width="286" height="100" rx="11" fill="#fff6e5" stroke="#e9c580"/>
+    <text x="441" y="573" font-size="17" font-weight="700">Neutron router</text><text x="441" y="599" font-size="15" fill="#53677f">Source NAT (SNAT),</text><text x="441" y="621" font-size="15" fill="#53677f">when enabled</text>
+    <rect x="824" y="551" width="296" height="80" rx="11" fill="#e8f5f3" stroke="#91ccbf"/>
+    <text x="844" y="582" font-size="17" font-weight="700">LAN / external destination</text><text x="844" y="608" font-size="15" fill="#53677f">Subject to routing and rules</text>
+    <path d="M 311 579 H 409" fill="none" stroke="#188878" stroke-width="3" marker-end="url(#teal-arrow)"/><path d="M 714 579 H 812" fill="none" stroke="#188878" stroke-width="3" marker-end="url(#teal-arrow)"/>
+    <path d="M 418 608 H 318" fill="none" stroke="#7b8ba0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#grey-arrow)"/><path d="M 821 608 H 721" fill="none" stroke="#7b8ba0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#grey-arrow)"/>
+    <text x="48" y="727" font-size="15" fill="#53677f">Legend: <tspan fill="#3268b3" font-weight="700">━━▶</tspan> inbound request   <tspan fill="#188878" font-weight="700">━━▶</tspan> outbound request   <tspan fill="#7b8ba0" font-weight="700">┄┄▶</tspan> reply</text>
+    <text x="48" y="757" font-size="15" fill="#53677f">A home-LAN floating IP is private, not a public internet IP. Internet access requires additional upstream connectivity.</text>
+    <text x="48" y="782" font-size="15" fill="#53677f">Illustrative only: NAT, routing, security groups and address assignments must be configured for the paths shown.</text>
+  </g>
+</svg>
