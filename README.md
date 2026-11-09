@@ -41,7 +41,7 @@ These values are drafts for this lab, not universal defaults. Being outside the 
 |---|---|
 | [00. Setup Management VM](docs/00-management-vm.md) | Prepare a separate workspace on R2D2 without overwriting the old configuration. |
 | [1. Ubuntu and recovery access](docs/01-foundations.md#step-1-install-and-identify-the-systems) | Identify the correct OS disk, install Ubuntu and verify console recovery. |
-| [2. SSH access](docs/01-foundations.md#step-2-establish-ssh-access) | Establish key-based management access to each node. |
+| [2. SSH and privilege access](docs/01-foundations.md#step-2-establish-ssh-access) | Establish key-based management access and verified non-interactive sudo on each system. |
 | [3. Management tools](docs/01-foundations.md#step-3-install-kolla-ansible-on-the-manager) | Install Ansible and Kolla-Ansible on the management VM. |
 | [4. Network and disk plan](docs/01-foundations.md#step-4-plan-and-configure-node-networking) | Record interfaces, addresses, VIP, floating-IP pool and storage identities. |
 | [5. Kolla inventory](docs/02-deploy-openstack.md#step-5-build-and-check-the-multinode-inventory) | Target the three actual nodes in the correct groups. |

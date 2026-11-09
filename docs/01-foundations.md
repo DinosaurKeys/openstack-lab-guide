@@ -135,6 +135,51 @@ It must return the expected node hostname without a node account-password prompt
 
 **Expected result:** All three identity-checked SSH tests return their respective hostnames. **Stop if:** fingerprints differ, authentication fails, or the wrong host answers. Fix that node before proceeding with node-targeting operations. Manager-only installation can still proceed.
 
+### Step 2a: Configure non-interactive sudo for Ansible
+
+**Goal:** Allow the approved `joe` account to run privileged Ansible and Kolla actions without an interactive sudo password prompt. **Where:** Run the following procedure separately on R2D2 and each node. **Prerequisites:** SSH access is established, the target host is verified, and Joe has explicitly accepted the security scope.
+
+This grants `joe` unrestricted root access without a password. It is convenient for unattended Ansible/Kolla operation, but any process running as `joe` can become root. A narrower sudo policy is safer but may block package, networking, storage and Kolla operations.
+
+First inspect the existing rule. Never overwrite it blindly:
+
+```bash
+sudo stat /etc/sudoers.d/90-joe-friday 2>/dev/null || \\
+  printf '%s\\n' 'File does not exist; it may be created.'
+```
+
+If the file exists, inspect and validate it:
+
+```bash
+sudo visudo -c
+sudo cat /etc/sudoers.d/90-joe-friday
+```
+
+If it does not exist, create it with root ownership and mode `0440`:
+
+```bash
+if sudo test -e /etc/sudoers.d/90-joe-friday; then
+    printf '%s\\n' 'STOP: file already exists; inspect it first.'
+else
+    printf '%s\\n' 'joe ALL=(ALL:ALL) NOPASSWD: ALL' |
+        sudo tee /etc/sudoers.d/90-joe-friday >/dev/null &&
+    sudo chown root:root /etc/sudoers.d/90-joe-friday &&
+    sudo chmod 0440 /etc/sudoers.d/90-joe-friday &&
+    sudo visudo -cf /etc/sudoers.d/90-joe-friday
+fi
+```
+
+Verify the effective rule without prompting:
+
+```bash
+sudo -n id -u
+sudo -n whoami
+```
+
+Expected output is `0` followed by `root`. If `visudo` reports an error, or either verification fails, stop on that host before continuing. Rollback is removal of only the newly created `/etc/sudoers.d/90-joe-friday` file after confirming no pre-existing file was replaced.
+
+**Expected result:** `sudo -n id -u` returns `0` on R2D2 and all three nodes. This verifies passwordless sudo only; it does not yet verify SSH key authentication or Ansible connectivity.
+
 ## Step 3: Install Kolla-Ansible on the manager
 
 **Using existing R2D2?** Start with [Step 00: Setup Management VM](00-management-vm.md). The generic instructions below and later deployment chapters still use `/etc/kolla` and `~/.venvs/kolla-2026.2`; they have not been adapted or tested for the separate R2D2 workspace. **Do not use these old-path commands for the fresh R2D2 build.**
