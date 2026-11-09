@@ -1,6 +1,6 @@
 # Foundations: Steps 1–4
 
-> **Private draft: fresh install only.** These instructions are for a newly installed management VM and three newly installed physical nodes. The current cloud is live: **do not run installation, package, networking, or configuration changes against it**. An existing-cloud investigation is a separate, read-only task. Nothing here authorizes a rebuild or disk initialization.
+> **Private draft: fresh install only.** These instructions describe a new OpenStack installation. Joe reports that the three physical nodes have already been reinstalled, while R2D2 retains files from the previous lab. Their present state needs to be verified; do not assume the previous cloud is running or that its data is gone. Nothing in this guide alone authorizes a rebuild or disk initialization.
 
 Kolla-Ansible runs on a management VM and configures the physical nodes through SSH and Ansible. The VM is an automation workstation, not a fourth OpenStack node. Each of the three physical nodes will run control, network and compute roles. Having three control nodes does not automatically make every service or storage backend highly available.
 
@@ -134,6 +134,71 @@ It must return the expected node hostname without a node account-password prompt
 **Expected result:** All three identity-checked SSH tests return their respective hostnames. **Stop if:** fingerprints differ, authentication fails, or the wrong host answers. Fix that node before proceeding with node-targeting operations. Manager-only installation can still proceed.
 
 ## Step 3: Install Kolla-Ansible on the manager
+
+### Starting fresh on an existing R2D2
+
+If your prompt looks like `(kolla-2026.2) joe@r2d2:~/fishbone$`, `(kolla-2026.2)` is the old Python environment and `~/fishbone` is the old working directory. Neither means the reinstalled nodes are running the old cloud. Keep the previous files intact while preparing the new build.
+
+| Purpose | Fresh-build location |
+|---|---|
+| Working directory | `~/openstack-fresh` |
+| Python environment | `~/.venvs/kolla-fresh` |
+| Intended Kolla configuration | `~/openstack-fresh/kolla` |
+
+**Important:** R2D2 also has an existing `/etc/kolla`. Kolla defaults to that directory unless told otherwise. A new working directory or Python environment does **not** automatically isolate the configuration or passwords. Preserve `/etc/kolla`, the old environment and `~/fishbone`; do not delete, rename, overwrite or use their credentials for the new build without a separate review.
+
+The following creates an empty workspace and Python environment **on R2D2 only**. It does not install Kolla or make node changes. Run each command separately and stop if one fails. Before starting, check that the new paths do not already exist, including as symlinks:
+
+```bash
+for p in "$HOME/openstack-fresh" "$HOME/.venvs/kolla-fresh"; do
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    printf 'EXISTS: %s; stop and inspect it.\n' "$p"
+  else
+    printf 'Absent: %s\n' "$p"
+  fi
+done
+```
+
+Continue only if **both** paths are absent. Check the parent environment directory without changing it:
+
+```bash
+if [ -d "$HOME/.venvs" ] && [ ! -L "$HOME/.venvs" ]; then
+  stat -c '%n owner=%U mode=%a' "$HOME/.venvs"
+else
+  printf '%s\n' 'STOP: ~/.venvs is missing, a symlink, or not a directory; inspect it first.'
+fi
+```
+
+If the owner is not your account or the parent needs to be created, stop and resolve that separately. Then create the new directories:
+
+```bash
+mkdir -m 700 "$HOME/openstack-fresh"
+```
+
+```bash
+mkdir -m 700 "$HOME/openstack-fresh/kolla"
+```
+
+Create the empty environment:
+
+```bash
+mkdir -m 700 "$HOME/.venvs/kolla-fresh" &&
+  /usr/bin/python3 -m venv "$HOME/.venvs/kolla-fresh"
+```
+
+If any creation step fails, stop. A partial directory may remain; inspect it before retrying. The environment contains Python tooling, but Kolla-Ansible is **not installed** by this command. Open a new terminal, then activate the new environment and enter the new directory:
+
+```bash
+source "$HOME/.venvs/kolla-fresh/bin/activate" &&
+cd "$HOME/openstack-fresh" &&
+printf 'Python environment: %s\nWorking directory: %s\n' "$VIRTUAL_ENV" "$PWD"
+```
+
+The displayed environment should end in `/.venvs/kolla-fresh`, and the working directory in `/openstack-fresh`. If not, stop. The old prompt may still appear in other terminal windows; close or deactivate those sessions before working on the new build.
+
+**Stop here on existing R2D2.** The generic fresh-manager instructions below and later deployment chapters still use `~/.venvs/kolla-2026.2` and `/etc/kolla`. They are not yet adapted or tested for this separate workspace. Before installing or deploying, the remaining guide must consistently use the selected release's supported configuration, inventory and password paths, and its behavior must be checked. Do not run the old-path commands against this new build. The new configuration directory is still empty, and no new credentials or inventory have been created.
+
+### Generic instructions for a completely new management VM
 
 **Goal:** Prepare a release-matched automation environment without deploying to nodes. **Where:** Use the `manager` terminal as its normal administrator. **Prerequisites:** Fresh manager, internet/APT access, working sudo, no existing environment or Kolla configuration at the paths below. This guide uses Kolla-Ansible `stable/2026.2` and Ubuntu 24.04. Do not mix release inventories or environments.
 
