@@ -1,20 +1,20 @@
-# Steps 10–11 — First VM and floating IP
+# Steps 10–11: First VM and floating IP
 
-> **Private working draft:** The addresses below describe this lab and must be sanitized before publication. These steps create cloud resources when run; writing this guide did not change the cloud. Run OpenStack commands on the **management VM**, as your normal user, in one terminal. Stop at each failed gate; never rerun a create command merely because it is slow. Record IDs and which objects you created in a private local record. Names are not necessarily unique: use IDs after checking them.
+> **Private working draft:** The addresses below describe this lab and must be sanitized before publication. Running these steps creates cloud resources; writing this guide did not change the cloud. Run OpenStack commands on the **management VM**, as your normal user, in one terminal. Stop at each failed gate; never rerun a create command merely because it is slow. Record IDs and which objects you created in a private local record. Names are not necessarily unique: use IDs after checking them.
 
 **Topology — illustration only; DO NOT TYPE**
 
 ![Floating IP and outbound network paths](../diagrams/floating-ip-flow.svg)
 
-A floating IP here is a **LAN address**, not a public Internet address. `ACTIVE` means the VM build finished; neither that nor an associated floating IP proves guest login, inbound connectivity, outbound SNAT, or DNS.
+The floating IP in this example is a **LAN address**, not a public Internet address. `ACTIVE` means the VM build finished; neither that nor an associated floating IP proves guest login, inbound connectivity, outbound SNAT, or DNS.
 
-## Step 10 — Create the first test VM
+## Step 10: Create the first test VM
 
 ### 10.1 Set up the client and authenticate
 
 **Where:** the management VM. The deployment and configuration validation in Step 9 must have succeeded. Keep cloud configuration, tokens, private keys, console credentials and unredacted logs private.
 
-**Existing deployment:** if the OpenStack client and a working `clouds.yaml` are already configured, skip the one-time setup below and go directly to the authentication check. Do not rerun post-deploy or overwrite configuration just to open a new terminal.
+**Existing deployment:** If the OpenStack client and a working `clouds.yaml` are already configured, skip the one-time setup below and go directly to the authentication check. Do not rerun post-deploy or overwrite configuration just to open a new terminal.
 
 **Fresh install only:** activate the same Kolla environment used in Step 9:
 
@@ -22,7 +22,7 @@ A floating IP here is a **LAN address**, not a public Internet address. `ACTIVE`
 source "$HOME/.venvs/kolla-2026.2/bin/activate"
 ```
 
-Install the release-constrained OpenStack CLI. This installs software on the management VM; stop if it fails:
+Install the release-constrained OpenStack CLI on the management VM. Stop if installation fails:
 
 ```bash
 python -m pip install python-openstackclient -c https://releases.openstack.org/constraints/upper/2026.2
@@ -40,7 +40,7 @@ For the verified interactive alternative, use `export ANSIBLE_BECOME_ASK_PASS=tr
 kolla-ansible post-deploy -i /etc/kolla/multinode
 ```
 
-Stop if post-deploy fails or its recap reports failed or unreachable hosts. The source and destination below contain credentials: do not display them. On this fresh-install path, inspect both directory paths and create them **only when absent**. Stop if either path is a symlink, is not a directory, has an unexpected owner or permissions, or if any command fails:
+Stop if post-deploy fails or its recap reports failed or unreachable hosts. The source and destination below contain credentials. Do not display them. On this fresh-install path, inspect both directory paths and create them **only when absent**. Stop if either path is a symlink, is not a directory, has an unexpected owner or permissions, or if any command fails:
 
 ```bash
 for d in "$HOME/.config" "$HOME/.config/openstack"; do
@@ -59,7 +59,7 @@ for d in "$HOME/.config" "$HOME/.config/openstack"; do
 done
 ```
 
-Continue only after manually confirming both are owned by your normal account, the OpenStack directory is private, and no stop message appeared. Check that the source is nonempty and the destination is absent, without printing the source:
+Continue only after manually confirming that both directories are owned by your normal account, the OpenStack directory is private, and no stop message appeared. Check that the source is nonempty and the destination is absent, without printing the source:
 
 ```bash
 sudo test -s /etc/kolla/clouds.yaml &&
@@ -68,14 +68,14 @@ sudo test -s /etc/kolla/clouds.yaml &&
 printf '%s\n' 'Source present; destination absent.'
 ```
 
-Only after that check passes, create the destination with shell **no-clobber** enabled, owner set to your account and mode 600. If a file or symlink appears before creation, the redirection fails rather than overwriting it. This writes a secret-bearing file; never add it to Git:
+Only after that check passes, create the destination with shell **no-clobber** enabled, owner set to your account and mode 600. If a file or symlink appears before creation, the redirection fails rather than overwriting it. This creates a file containing secrets. Never add it to Git:
 
 ```bash
 sudo bash -c 'umask 077; set -C; cat /etc/kolla/clouds.yaml > "$1" && chown "$2:$3" "$1" && chmod 600 "$1"' \
   _ "$HOME/.config/openstack/clouds.yaml" "$(id -un)" "$(id -gn)"
 ```
 
-If it fails, stop and inspect the destination ownership and file state without displaying its contents; do not blindly retry. Check only its metadata:
+If it fails, stop and inspect the destination ownership and file state without displaying its contents. Do not blindly retry. Check only its metadata:
 
 ```bash
 stat -c '%n owner=%U mode=%a' "$HOME/.config/openstack/clouds.yaml"
@@ -112,9 +112,9 @@ openstack security group list
 openstack floating ip list
 ```
 
-**Expected output:** the intended Keystone, Nova, Neutron, Glance and Placement services and enabled endpoints; each expected `nova-compute`, `nova-scheduler` and `nova-conductor` row is `up` and `enabled` on its intended node, as are the expected network agents. Missing or down entries are a stop condition, not a cue to repeat deployment. Endpoint listing shows registration, not that every endpoint was individually tested. Check service health and capacity, and inspect every matching name and its project, ID, settings and dependencies before reuse. Stop on ambiguous names, conflicting configuration or inaccessible project resources. Do not create another resource with the same name. The commands below are the **fresh path**; where a compatible object exists, explicitly inspect it, use its unique ID and skip its create command. Do not modify shared resources without a separate impact review. Verify `10.254.211.0/24` does not overlap any LAN, VPN, routed network or existing subnet before creating it.
+**Expected output:** the intended Keystone, Nova, Neutron, Glance and Placement services and enabled endpoints; each expected `nova-compute`, `nova-scheduler` and `nova-conductor` row is `up` and `enabled` on its intended node, as are the expected network agents. Missing or down entries are a stop condition, not a cue to repeat deployment. The endpoint list shows registration; it does not show whether every endpoint was individually tested. Check service health and capacity, and inspect every matching name and its project, ID, settings and dependencies before reuse. Stop on ambiguous names, conflicting configuration or inaccessible project resources. Do not create another resource with the same name. The commands below are the **fresh path**; where a compatible object exists, explicitly inspect it, use its unique ID and skip its create command. Do not modify shared resources without a separate impact review. Verify `10.254.211.0/24` does not overlap any LAN, VPN, routed network or existing subnet before creating it.
 
-**Existing deployment resume — stop and inspect, do not recreate:** The separate lab already had `lab-smoke` ACTIVE at `10.254.211.204`, with no external router/FIP and no guest key. This is historical context, not a live check: recheck the VM, its project, port, security groups, IP and router associations now. Preserve it and its disk. Do not run the fresh VM, key injection, or network creation instructions against it automatically. Its original boot did not inject a key; adding a keypair in Nova later will not install a key in that guest. Use an authorized guest console and separately approved guest access provisioning, or get explicit approval for a **new, differently named** VM. A console URL is sensitive; keep it private:
+**Existing deployment resume — stop and inspect, do not recreate:** The separate lab already had `lab-smoke` ACTIVE at `10.254.211.204`, with no external router/FIP and no guest key. This is historical context, not a live check. Recheck the VM, its project, port, security groups, IP and router associations now. Preserve it and its disk. Do not run the fresh VM, key injection, or network creation instructions against it automatically. Its original boot did not inject a key; adding a keypair in Nova later will not install a key in that guest. Use an authorized guest console and separately approved guest access provisioning, or get explicit approval for a **new, differently named** VM. A console URL is sensitive; keep it private:
 
 ```bash
 openstack server show lab-smoke -c id -c status -c addresses -c key_name
@@ -124,9 +124,9 @@ openstack console url show lab-smoke
 
 Inspect the exact port with `openstack port show '<port-id>'`, replacing the quoted placeholder with the real ID. Inspect its security groups and existing rules. If this preserved VM is separately approved for the networking exercise, record its server ID and set `VM_ID` to that ID in the same terminal before continuing to Step 11; provision guest access only through a separately approved method. The remaining instructions are not permission to change this existing cloud. `ACTIVE` and the private address alone do not establish external reachability.
 
-### 10.2 Key, image and VM prerequisites — fresh path
+### 10.2 Key, image and VM prerequisites: fresh path
 
-The guest key must exist **before** the first boot. On the management VM check `~/.ssh/lab-smoke` and `.pub`; if either exists, stop and inspect rather than overwrite. Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git.
+The guest key must exist **before** the first boot. On the management VM, check `~/.ssh/lab-smoke` and `.pub`; if either exists, stop and inspect rather than overwrite. Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git.
 
 ```bash
 ssh-keygen -t ed25519 -f "$HOME/.ssh/lab-smoke" -C lab-smoke
@@ -144,7 +144,7 @@ Only if `lab-smoke-key` was absent from the previous check, import the public ke
 openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key
 ```
 
-If it already exists, compare its public-key fingerprint with the local public key and reuse only if they match. Do not regenerate a lost private key and assume it matches.
+If it already exists, compare its public-key fingerprint with the local public key. Reuse it only if they match. Do not regenerate a lost private key and assume it matches.
 
 Download CirrOS from its [official 0.6.3 release directory](https://download.cirros-cloud.net/0.6.3/); this x86-64 image is a disposable test image, **not production**. CirrOS has a publicly known default login and passwordless sudo: limit network exposure and remove the test VM when no longer needed. Its [publisher](https://github.com/cirros-dev/cirros) documents the guest user `cirros`.
 
@@ -168,7 +168,7 @@ grep '  cirros-0.6.3-x86_64-disk.img$' cirros-0.6.3-SHA256SUMS | sha256sum -c -
 
 ### 10.3 Create private networking, flavor, image and restricted security group
 
-Only after the inspection and collision gates pass, execute each command separately; stop on failure and record each returned ID. A flavor is the VM hardware size, while an image is the boot disk template.
+Only after the inspection and collision gates pass, execute each command separately; stop on failure and record each returned ID. A flavor defines the VM hardware size; an image is the boot disk template.
 
 ```bash
 openstack network create lab-private
@@ -185,7 +185,7 @@ openstack image show lab-test-image -c status
 
 **Expected output:** the intended subnet and flavor, and image status `active`. Stop otherwise. For DNS tests later, inspect the private subnet's DNS servers (`openstack subnet show lab-private-subnet`). Only if needed, and only on this newly created dedicated subnet, set a verified reachable DNS resolver with `openstack subnet set --dns-nameserver <verified-resolver-ip> lab-private-subnet`; do not change DNS on a shared subnet without review.
 
-Select a trusted test client's actual source address on the provider LAN, accounting for any NAT. Replace the example input with its verified `/32`; never use `0.0.0.0/0` for convenience. Create a dedicated group only if absent. Default egress rules can permit outbound traffic; inspect them and all other groups because rules are additive.
+Select the actual source address of a trusted test client on the provider LAN, accounting for any NAT. Replace the example input with its verified `/32`; never use `0.0.0.0/0` for convenience. Create a dedicated group only if absent. Default egress rules can permit outbound traffic; inspect them and all other groups because rules are additive.
 
 ```bash
 TRUSTED_CIDR='<verified-client-ip>/32'
@@ -195,7 +195,7 @@ openstack security group rule create --ingress --ethertype IPv4 --protocol icmp 
 openstack security group rule list lab-vm-access
 ```
 
-**Gate:** confirm only the intended ingress rules and appropriate egress are present. Reusing an existing group requires reviewing its rules, other attached ports and ownership; do not edit a shared group blindly.
+**Gate:** confirm only the intended ingress rules and appropriate egress are present. Before reusing an existing group, review its rules, other attached ports and ownership. Do not edit a shared group blindly.
 
 ### 10.4 Boot once and check
 
@@ -221,11 +221,11 @@ openstack port list --server "$VM_ID" --long
 
 **Expected output:** `ACTIVE`, a private fixed IP, the intended key name, and a VM port on `lab-private`. Record the server ID, port ID and fixed IPv4. Inspect that port and its actual groups. If still building, inspect the same VM later; if `ERROR`, stop and diagnose safely without creating another. The VM is not yet externally reachable. Continue only after the VM, image and port gates pass.
 
-## Step 11 — Connect the private network to the provider LAN
+## Step 11: Connect the private network to the provider LAN
 
 ### 11.1 Verify the physical and IP plan
 
-This path creates a flat external provider network, dedicated router and floating IP; it does **not** reconfigure switches, node interfaces or DHCP. Verify the existing Kolla/Neutron mapping `physnet1:br-ex`, the `provider0` uplink, switch/VLAN and upstream path on the actual hosts before proceeding. A link-up indication does not prove the upstream network works. The external LAN is `192.168.0.0/24`, gateway `192.168.0.1`, and Neutron pool `192.168.0.151–192.168.0.199`. Joe has confirmed that pool is excluded from DHCP; the VIP `.150` is excluded and nodes `.200–.202` are outside the pool. Confirm the pool is also clear of **all** static assignments, current allocations and other Neutron networks with the LAN administrator and the relevant DHCP/IPAM records before assignment; an unanswered ping does not establish availability. The router gateway and floating IP each consume a pool address.
+This path creates a flat external provider network, dedicated router and floating IP; it does **not** reconfigure switches, node interfaces or DHCP. Verify the existing Kolla/Neutron mapping `physnet1:br-ex`, the `provider0` uplink, switch/VLAN and upstream path on the actual hosts before proceeding. A link-up indication alone does not prove that the upstream network works. The external LAN is `192.168.0.0/24`, gateway `192.168.0.1`, and Neutron pool `192.168.0.151–192.168.0.199`. Joe has confirmed that pool is excluded from DHCP; the VIP `.150` is excluded and nodes `.200–.202` are outside the pool. Confirm the pool is also clear of **all** static assignments, current allocations and other Neutron networks with the LAN administrator and the relevant DHCP/IPAM records before assignment; an unanswered ping does not establish availability. The router gateway and floating IP each consume a pool address.
 
 Re-run the inspection in 10.1 and also:
 
@@ -234,9 +234,9 @@ openstack port list --server "$VM_ID" --long
 openstack floating ip list
 ```
 
-Select the intended port from the output; inspect it, record its original security-group IDs and existing floating IP association, and inspect any router or subnet already attached. Stop for conflicting or ambiguous resources. If an external network, subnet or router already exists, inspect type, physical mapping, CIDR, pool, gateway, SNAT, ownership and all dependent ports. Reuse only a fully compatible network by its ID and skip its create command. A reused/shared router must not have its gateway or interfaces changed without separate impact approval; if the private subnet is already attached, inspect the existing route rather than creating another router. Never allocate or associate a second FIP if one already exists on the target port without explicit review.
+Select the intended port from the output; inspect it, record its original security-group IDs and existing floating IP association, and inspect any router or subnet already attached. Stop for conflicting or ambiguous resources. If an external network, subnet or router already exists, inspect type, physical mapping, CIDR, pool, gateway, SNAT, ownership and all dependent ports. Reuse a network by its ID only if it is fully compatible, and skip its create command. A reused/shared router must not have its gateway or interfaces changed without separate impact approval; if the private subnet is already attached, inspect the existing route rather than creating another router. Never allocate or associate a second FIP if one already exists on the target port without explicit review.
 
-**Input — replace the placeholders with the recorded unique VM port ID, fixed IPv4 and private subnet ID.** Do not type the angle brackets:
+**Input:** Replace the placeholders with the recorded unique VM port ID, fixed IPv4 and private subnet ID. Do not type the angle brackets:
 
 ```bash
 VM_PORT='<verified-vm-port-id>'
@@ -327,7 +327,7 @@ openstack port set --security-group "$ACCESS_GROUP_ID" "$VM_PORT"
 openstack port show "$VM_PORT"
 ```
 
-This adds a group; it does not remove existing groups. Compare the port's complete group list with the original. Broad rules in any other group can still allow access. Check port security and guest firewall too. Do not alter a shared security group to make a test pass.
+This adds a group without removing existing groups. Compare the port's complete group list with the original. Broad rules in any other group can still allow access. Check port security and guest firewall too. Do not alter a shared security group to make a test pass.
 
 Allocate once from the verified pool, record the returned ID/address, and do not repeat if association fails:
 
@@ -345,7 +345,7 @@ openstack port show "$VM_PORT"
 openstack server show "$VM_ID" -c status -c addresses
 ```
 
-**Expected output:** the FIP shows the recorded VM port, fixed IP and router; the VM remains `ACTIVE`. Record the actual floating address for the tests below. An API association is not a reachability test.
+**Expected output:** the FIP shows the recorded VM port, fixed IP and router; the VM remains `ACTIVE`. Record the actual floating address for the tests below. An API association does not test reachability.
 
 ### 11.3 Test inbound, outbound and DNS separately
 
@@ -357,7 +357,7 @@ ping -c 3 "$FLOATING_IP"
 ssh -i "$HOME/.ssh/lab-smoke" "cirros@$FLOATING_IP"
 ```
 
-**Expected:** ping replies if ICMP is allowed, then SSH login as `cirros` after verifying the host key by a trusted console. Failure can be upstream filtering, security groups, routing, guest firewall/service, or key injection; a successful ping is not SSH proof. This is LAN reachability, not public access.
+**Expected:** ping replies if ICMP is allowed, then SSH login as `cirros` after verifying the host key by a trusted console. Failure can be upstream filtering, security groups, routing, guest firewall/service, or key injection; a successful ping is not SSH proof. This tests LAN reachability, not public access.
 
 From the guest's authorized console or SSH session, perform separate tests. Choose a known reachable external IP and a domain appropriate to your network:
 
@@ -371,9 +371,9 @@ nslookup "$TEST_DOMAIN"
 
 The first tests the private gateway (confirm its actual address from subnet/router if not `.1`); the second tests outbound IP connectivity via SNAT and upstream routing, without relying on DNS; the third tests DNS resolution. ICMP may be blocked even with working routes. A failed lookup can be resolver, DNS egress or upstream policy; a successful lookup alone does not prove outbound application access. Note each PASS, FAIL or NOT TESTED independently. Never claim live connectivity from a simulated or API-only check.
 
-### 11.4 Narrow rollback — only this exercise's changes
+### 11.4 Narrow rollback: only this exercise's changes
 
-Rollback is optional and changes real cloud state. Before each command, inspect exact IDs, current associations and dependencies; stop on unexpected changes or concurrent use. Never touch preexisting resources, other ports, unrelated security groups, or shared routers. Keep the recorded list of what this exercise actually created or attached.
+Rollback is optional, and it changes real cloud state. Before each command, inspect exact IDs, current associations and dependencies; stop on unexpected changes or concurrent use. Never touch preexisting resources, other ports, unrelated security groups, or shared routers. Keep a record of what this exercise actually created or attached.
 
 1. If **this exercise** associated the recorded FIP and it still points to `VM_PORT`, disassociate it and inspect the result. Skip this block if it was never associated:
 
