@@ -259,15 +259,21 @@ kolla-ansible --version
 
 Both executable paths must begin with `$KOLLA_VENV/bin/`. If not, stop; the shell is using the wrong environment.
 
-### 3.4 Copy only the release-matched examples into the fresh configuration path
+### 3.4 Prepare the release-matched Kolla configuration
 
-Check that the fresh directory is empty or contains only the files created by this procedure. Do not overwrite an existing fresh configuration:
+This section has four separate gates. **Passing one gate does not complete Step 3.4.** Stop after each gate and verify its result.
+
+#### 3.4.1 Inspect the destination — read-only
 
 ```bash
 find "$KOLLA_CONFIG_PATH" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
 ```
 
-If files already exist, stop and inspect them. Otherwise copy the examples from the installed release:
+**Expected:** no output. If any file is listed, stop and inspect it. Do not overwrite an existing fresh configuration.
+
+#### 3.4.2 Copy the release examples — file change
+
+Run only after 3.4.1 returns no output:
 
 ```bash
 cp -r "$VIRTUAL_ENV/share/kolla-ansible/etc_examples/kolla/." "$KOLLA_CONFIG_PATH/" &&
@@ -275,13 +281,17 @@ cp -n "$VIRTUAL_ENV/share/kolla-ansible/ansible/inventory/multinode" "$KOLLA_INV
 chmod 600 "$KOLLA_CONFIG_PATH/passwords.yml"
 ```
 
-Install the release's Ansible collections:
+Stop if the command fails. This creates the fresh Kolla configuration, inventory and password-file template. It does not contact or change the nodes.
+
+#### 3.4.3 Install Ansible collections — manager-side change
 
 ```bash
 kolla-ansible install-deps
 ```
 
-This installs manager-side dependencies only; it does not bootstrap or deploy the nodes. Verify files without displaying passwords:
+This installs manager-side dependencies only. It does not bootstrap or deploy the nodes. Stop if it fails.
+
+#### 3.4.4 Verify the completed Step 3.4 result — read-only
 
 ```bash
 test -f "$KOLLA_CONFIG_PATH/globals.yml" &&
@@ -290,9 +300,9 @@ test -f "$KOLLA_INVENTORY" &&
 stat -c '%a %n' "$KOLLA_CONFIG_PATH/passwords.yml"
 ```
 
-Do not generate passwords or edit the inventory until the next numbered step. The release inventory still contains sample hosts and is not safe to target yet.
+**Expected:** all checks succeed and the password file reports mode `600`. Only after this verification is **Step 3.4 complete**. Do not generate passwords or edit the inventory until the next numbered step.
 
-**Expected result:** R2D2 has working release-matched executables in `~/.venvs/kolla-fresh`, release examples in `~/openstack-fresh/kolla`, and no node-side changes. **Stop if:** any path is wrong, an old path is used, installation fails, a destination already contains unexpected files, or a command selects Ansible outside the fresh venv.
+**Expected result for Step 3:** R2D2 has working release-matched executables in `~/.venvs/kolla-fresh`, release examples in `~/openstack-fresh/kolla`, and no node-side changes. **Stop if:** any path is wrong, an old path is used, installation fails, a destination contains unexpected files, or a command selects Ansible outside the fresh venv.
 
 ## Step 4: Plan and configure node networking
 
