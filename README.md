@@ -8,7 +8,7 @@ This guide walks through building and operating a small, three-node OpenStack la
 
 | Your situation | Start here |
 |---|---|
-| New, empty lab | [Step 1: Foundations](docs/01-foundations.md) |
+| Fresh build using R2D2 | [Step 00: Setup Management VM](docs/00-management-vm.md) |
 | Existing cloud | [Existing-cloud checkpoint](#existing-cloud-checkpoint) |
 | Something failed | Stop at the failing step. Preserve the error without sharing secrets, investigate it, and recover the current cloud before considering a rebuild. |
 
@@ -39,6 +39,7 @@ These values are drafts for this lab, not universal defaults. Being outside the 
 
 | Step | Outcome |
 |---|---|
+| [00. Setup Management VM](docs/00-management-vm.md) | Prepare a separate workspace on R2D2 without overwriting the old configuration. |
 | [1. Ubuntu and recovery access](docs/01-foundations.md#step-1-install-and-identify-the-systems) | Identify the correct OS disk, install Ubuntu and verify console recovery. |
 | [2. SSH access](docs/01-foundations.md#step-2-establish-ssh-access) | Establish key-based management access to each node. |
 | [3. Management tools](docs/01-foundations.md#step-3-install-kolla-ansible-on-the-manager) | Install Ansible and Kolla-Ansible on the management VM. |
@@ -59,11 +60,11 @@ Steps 12–15 are follow-on exercises. Leave a storage design disabled until it 
 
 ## Existing-cloud checkpoint
 
-**Do not run the fresh-install steps against an existing cloud.** The last read-only check on Joe's lab found `lab-smoke` `ACTIVE` with private address `10.254.211.204`, but no external Neutron network, router or floating IP. The VM used the `default` security group, and no SSH key was injected when it was created. These observations do not guarantee the current state, so check again before making changes.
+**Do not run the fresh-install steps against an existing cloud.** In the previous deployment, a read-only check found `lab-smoke` `ACTIVE` with private address `10.254.211.204`, but no external Neutron network, router or floating IP. The VM used the `default` security group, and no SSH key was injected when it was created. Joe has since reinstalled the three nodes. These observations are historical and do not establish the current state.
 
-The next learning goal is Step 11. Inspect what already exists, then plan and separately approve the network changes. Do not delete `lab-smoke` just to create its network. Adding a floating IP does not add an SSH key to the guest. The [VM and networking chapter](docs/03-first-vm-and-network.md) explains the fresh-build path and how an existing VM differs.
+For Joe's fresh build, start with [Step 00](docs/00-management-vm.md), then identify the reinstalled nodes in Step 1. Do not assume the old VM or networks still exist. The [VM and networking chapter](docs/03-first-vm-and-network.md) explains the fresh-build path and how an existing VM differs.
 
-For reboot or recovery of this deployment, use `docs/SHUTDOWN-AND-RECOVERY.md` in the existing `openstack-lab` repository, after checking that its instructions match the deployed system. Database recovery is not a routine action after every reboot.
+For a deployed cloud, consult `docs/SHUTDOWN-AND-RECOVERY.md` in the existing `openstack-lab` repository only after checking that its instructions match that deployment. A dedicated chapter for the fresh build is still pending. Database recovery is not a routine action after every reboot.
 
 ## Safety and verification
 
