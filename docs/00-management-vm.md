@@ -61,9 +61,28 @@ printf 'Python environment: %s\nWorking directory: %s\n' "$VIRTUAL_ENV" "$PWD"
 
 The displayed environment should end in `/.venvs/kolla-fresh`, and the working directory in `/openstack-fresh`. If not, stop. The old prompt may still appear in other terminal windows; close or deactivate those sessions before working on the new build.
 
-**Stop before installing or deploying Kolla on existing R2D2.** The generic fresh-manager instructions in Step 3 and later deployment chapters still use `~/.venvs/kolla-2026.2` and `/etc/kolla`. They are not yet adapted or tested for this separate workspace. Before installing or deploying, the remaining guide must consistently use the selected release's supported configuration, inventory and password paths, and its behavior must be checked. Do not run the old-path commands against this new build. The new configuration directory is still empty, and no new credentials or inventory have been created. You can continue to the read-only identity checks in Step 1.
+## Path contract for this fresh build
 
+All Kolla commands in the remaining guide use the new R2D2 workspace, not the historical `/etc/kolla` tree or the old `kolla-2026.2` virtual environment. At the start of every new R2D2 terminal, run:
+
+```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
+source "$KOLLA_VENV/bin/activate"
+printf 'VENV=%s\nCONFIG=%s\nINVENTORY=%s\n' "$VIRTUAL_ENV" "$KOLLA_CONFIG_PATH" "$KOLLA_INVENTORY"
+```
+
+Expected paths are:
+
+```text
+VENV=/home/joe/.venvs/kolla-fresh
+CONFIG=/home/joe/openstack-fresh/kolla
+INVENTORY=/home/joe/openstack-fresh/kolla/multinode
+```
+
+The historical `/etc/kolla`, old virtual environment and `~/fishbone` remain out of scope. Do not copy their passwords, inventory or `clouds.yaml` into the fresh workspace.
 
 ## Next step
 
-Continue with [Step 1: Install and identify the systems](01-foundations.md#step-1-install-and-identify-the-systems). The reinstalled nodes must be identified and checked; do not reinstall them again merely to follow the guide.
+Continue with [Step 1: Install and identify the systems](01-foundations.md#step-1-install-and-identify-the-systems). The reinstalled nodes must be identified and checked; do not reinstall them again merely to follow this guide.

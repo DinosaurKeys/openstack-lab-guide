@@ -8,23 +8,23 @@ These optional extensions follow the core cloud and disposable VM exercise. Comm
 
 **Status: DESIGN HOLD.** Previous inspection found `cinder-volumes` VGs and thin pools on `/dev/sda` on all three nodes. Recheck device names and actual mappings, and preserve existing data and metadata. The three-node independent-backend design has not been validated against the installed Kolla 2026.2 release's HA precheck. Cinder remains disabled; this guide does not claim installation or backend failover. Do not initialize, wipe, resize or recreate any PV, VG, thin pool or filesystem.
 
-**Where / prerequisites.** Work on the management VM using its installed Kolla virtual environment and `/etc/kolla/multinode`. You need SSH access to each actual node and read-only privilege where required. Use the real existing inventory, not sample hostnames. Review the [Kolla 2026.2 Cinder guidance](https://docs.openstack.org/kolla-ansible/2026.2/reference/storage/cinder-guide.html), including its multi-controller LVM warning.
+**Where / prerequisites.** Work on the management VM using its installed Kolla virtual environment and `$KOLLA_CONFIG_PATH/multinode`. You need SSH access to each actual node and read-only privilege where required. Use the real existing inventory, not sample hostnames. Review the [Kolla 2026.2 Cinder guidance](https://docs.openstack.org/kolla-ansible/2026.2/reference/storage/cinder-guide.html), including its multi-controller LVM warning.
 
 **Action — read-only discovery on the management VM:**
 
 ```bash
-source "$HOME/.venvs/kolla-2026.2/bin/activate"
-ansible-inventory -i /etc/kolla/multinode --graph storage
-ansible-inventory -i /etc/kolla/multinode --graph cinder-volume
-ansible-inventory -i /etc/kolla/multinode --graph cinder-volume-lvm
-ansible-inventory -i /etc/kolla/multinode --graph cinder-volume-multiple
+source "$KOLLA_VENV/bin/activate"
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph storage
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph cinder-volume
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph cinder-volume-lvm
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph cinder-volume-multiple
 ```
 
 Inspect the actual group membership and installed logic; they may change across updates. These files contain configuration templates, so do not share output containing secrets.
 
 ```bash
-sed -n '1,160p' "$HOME/.venvs/kolla-2026.2/share/kolla-ansible/ansible/roles/cinder/tasks/precheck.yml"
-grep -nE 'cinder_cluster_name|cinder_cluster_skip_precheck' "$HOME/.venvs/kolla-2026.2/share/kolla-ansible/ansible/roles/cinder/defaults/main.yml"
+sed -n '1,160p' "$KOLLA_VENV/share/kolla-ansible/ansible/roles/cinder/tasks/precheck.yml"
+grep -nE 'cinder_cluster_name|cinder_cluster_skip_precheck' "$KOLLA_VENV/share/kolla-ansible/ansible/roles/cinder/defaults/main.yml"
 ```
 
 A storage group with one host does not by itself prove that the HA check counts only one host. Compare the exact precheck condition with the effective inventory groups. Do not set a common cluster name or skip the check just to make it pass: a common name does not turn local disks into shared storage.
@@ -61,9 +61,9 @@ sudo lvs -a -o vg_name,lv_name,lv_size,lv_attr,pool_lv,data_percent,metadata_per
 **Action — read-only baseline:** Run these commands on the management VM with a configured authenticated cloud name, without printing the token. If authentication is unavailable, stop and mark API checks BLOCKED:
 
 ```bash
-openstack --os-cloud kolla-admin server list --all-projects
-openstack --os-cloud kolla-admin compute service list
-openstack --os-cloud kolla-admin network agent list
+openstack --os-cloud "$OS_CLOUD" server list --all-projects
+openstack --os-cloud "$OS_CLOUD" compute service list
+openstack --os-cloud "$OS_CLOUD" network agent list
 ```
 
 The cloud name is an example. Check the names in your protected local `clouds.yaml` privately and use the actual name. Record the expected node identities, each service's `up`/`enabled` state and the disposable VM's status. Inspect the [existing shutdown and recovery guide](https://github.com/DinosaurKeys/openstack-lab/blob/main/docs/SHUTDOWN-AND-RECOVERY.md) and its scripts before relying on them. Independently verify every configured Galera member's current Primary/Synced/ready status and RabbitMQ membership and partitions. A running container, reachable VIP or single successful API request does not establish quorum. Do not print credentials or raw logs.
@@ -82,7 +82,7 @@ The cloud name is an example. Check the names in your protected local `clouds.ya
 
 ```bash
 terraform version
-openstack --os-cloud kolla-admin token issue -c expires -f value
+openstack --os-cloud "$OS_CLOUD" token issue -c expires -f value
 ```
 
 Use the real configured cloud name rather than the example. The second command requests a token but displays only its expiry, not the token itself. If either command or authentication fails, mark the step BLOCKED. Do not print credentials to troubleshoot.
@@ -175,15 +175,15 @@ Do not commit `.terraform/`, state files, plans, `clouds.yaml` or credentials. A
 **Action — read-only discovery on the management VM:**
 
 ```bash
-source "$HOME/.venvs/kolla-2026.2/bin/activate"
-ansible-inventory -i /etc/kolla/multinode --graph monitoring
-ansible-inventory -i /etc/kolla/multinode --graph prometheus
-ansible-inventory -i /etc/kolla/multinode --graph grafana
+source "$KOLLA_VENV/bin/activate"
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph monitoring
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph prometheus
+ansible-inventory -i $KOLLA_CONFIG_PATH/multinode --graph grafana
 ```
 
 Review the installed release's `roles/prometheus/defaults/main.yml`, prechecks, relevant service inventory children and nonsecret monitoring flags in globals. Do not dump passwords. On each intended host, inspect `free -h`, `df -h` and current load (`uptime`). Compare available capacity and retention against the proposed workload rather than assuming idle services free memory. This guide does not select nodes or make a capacity decision.
 
-**Implementation sequence — after approval:** Choose hosts, failure and retention expectations, access restrictions, exporter scope and rollback. Back up the configuration securely. Add real host aliases to the correct release-matched inventory groups without damaging child relationships. Review and set `enable_prometheus: true` and `enable_grafana: true` in the existing globals rather than creating duplicate keys. Validate the YAML and effective placement. Use the matching Kolla environment and approved privilege mode. Run release-matched `kolla-ansible prechecks -i /etc/kolla/multinode`, adding `--use-test-images` only for the approved test-image configuration. Stop on failure. After reviewing impact, run the approved Kolla deploy, not an unreviewed host-limited operation. Kolla output can contain secrets.
+**Implementation sequence — after approval:** Choose hosts, failure and retention expectations, access restrictions, exporter scope and rollback. Back up the configuration securely. Add real host aliases to the correct release-matched inventory groups without damaging child relationships. Review and set `enable_prometheus: true` and `enable_grafana: true` in the existing globals rather than creating duplicate keys. Validate the YAML and effective placement. Use the matching Kolla environment and approved privilege mode. Run release-matched `kolla-ansible prechecks -i $KOLLA_CONFIG_PATH/multinode`, adding `--use-test-images` only for the approved test-image configuration. Stop on failure. After reviewing impact, run the approved Kolla deploy, not an unreviewed host-limited operation. Kolla output can contain secrets.
 
 **Validation gate:** Through the approved authenticated path, confirm Grafana login, Prometheus data source connectivity, scrape-target status for each expected exporter and fresh timestamped host metrics in a dashboard. Confirm that access is denied on unintended networks. Test alerts only if alerting is configured. A running container or login page alone is not a metrics test. If authentication, a target or fresh data is missing, report the exact portion BLOCKED or FAIL and stop before relying on alerts.
 

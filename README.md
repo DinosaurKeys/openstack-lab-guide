@@ -30,7 +30,7 @@ The management VM runs the deployment tools, and each of the three physical node
 | OpenStack API VIP | `192.168.0.150` | Shared address for the OpenStack APIs, not a VM floating IP. |
 | Proposed floating-IP pool | `192.168.0.151–199` | Joe reports this range is outside DHCP and available. Verify current allocations before assigning any address. Router gateway ports also consume an address from the pool. |
 | Private VM subnet | `10.254.211.0/24` | Private OpenStack network. Confirm it does not overlap connected VPNs or other networks before creating it. |
-| Provider mapping | `physnet1` → `br-ex` → `provider0` | The current lab's verified mapping. Check it on a new build before relying on it. |
+| Provider mapping | Planned `physnet1` → `br-ex` → `provider0` | Verify the actual USB NIC, bridge and physical-network mapping during Step 4; the current node discovery showed the USB NICs down, so this is not yet verified. |
 | Timezone | `Europe/Bucharest` | Lab display timezone; time synchronization remains important on all hosts. |
 
 These values are drafts for this lab, not universal defaults. Being outside the DHCP range does not prove that every address in the pool is unallocated. For the actual installation, also confirm the management VM's address, provider switch/VLAN, client source address and upstream reachability. **Never put passwords, private keys or cloud credentials in this repository.**

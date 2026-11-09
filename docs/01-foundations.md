@@ -182,38 +182,58 @@ Expected output is `0` followed by `root`. If `visudo` reports an error, or eith
 
 ## Step 3: Install Kolla-Ansible on the manager
 
-**Using existing R2D2?** Start with [Step 00: Setup Management VM](00-management-vm.md). The generic instructions below and later deployment chapters still use `/etc/kolla` and `~/.venvs/kolla-2026.2`; they have not been adapted or tested for the separate R2D2 workspace. **Do not use these old-path commands for the fresh R2D2 build.**
+**Goal:** Install the release-matched Ansible and Kolla-Ansible tooling on R2D2 without deploying to the nodes. **Where:** R2D2 only. **Prerequisites:** Steps 1–2 complete, working internet/APT access, verified passwordless sudo, and the fresh paths from Step 00.
 
-### Generic instructions for a completely new management VM
+This build uses the existing fresh virtual environment and configuration directory:
 
-**Goal:** Prepare a release-matched automation environment without deploying to nodes. **Where:** Use the `manager` terminal as its normal administrator. **Prerequisites:** Fresh manager, internet/APT access, working sudo, no existing environment or Kolla configuration at the paths below. This guide uses Kolla-Ansible `stable/2026.2` and Ubuntu 24.04. Do not mix release inventories or environments.
+```text
+VENV=$HOME/.venvs/kolla-fresh
+CONFIG=$HOME/openstack-fresh/kolla
+INVENTORY=$HOME/openstack-fresh/kolla/multinode
+```
 
-Check the target and destinations first:
+Do not use the historical `/etc/kolla`, `~/.venvs/kolla-2026.2`, or `~/fishbone` paths. The Kolla configuration path is selected through the exported `KOLLA_CONFIG_PATH` variable; the default historical configuration remains untouched.
+
+### 3.1 Verify the manager and fresh destinations
+
+Run the Step 00 path contract first in the R2D2 terminal, then verify:
 
 ```bash
 hostname
 . /etc/os-release && printf '%s\n' "$PRETTY_NAME"
-for p in "$HOME/.venvs/kolla-2026.2" /etc/kolla; do
-  if [ -e "$p" ] || [ -L "$p" ]; then printf 'EXISTS: %s — stop and inspect\n' "$p"; else printf 'Absent: %s\n' "$p"; fi
+printf 'VENV=%s\nCONFIG=%s\n' "$KOLLA_VENV" "$KOLLA_CONFIG_PATH"
+for p in "$KOLLA_VENV" "$KOLLA_CONFIG_PATH"; do
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    stat -c 'EXISTS %n owner=%U mode=%a' "$p"
+  else
+    printf 'MISSING: %s\n' "$p"
+  fi
 done
 ```
 
-Continue only on the fresh manager when **both** paths are absent. Never chown or overwrite an existing `/etc/kolla`, which may contain live-cloud secrets. Install prerequisites and create the environment:
+The venv and configuration directory are expected to exist because Step 00 created them. Stop if either is a symlink, has an unexpected owner or mode, or is not a directory. Do not inspect or copy old passwords.
+
+### 3.2 Install manager prerequisites
+
+The following changes R2D2 only:
 
 ```bash
-sudo apt update && sudo apt install -y git curl python3-dev python3-venv libffi-dev gcc libssl-dev libdbus-glib-1-dev
+sudo apt update &&
+sudo apt install -y git curl python3-dev python3-venv libffi-dev gcc libssl-dev libdbus-glib-1-dev
 ```
 
+Stop if the command fails. No node or OpenStack service is changed by this step.
+
+### 3.3 Install the pinned toolchain in the fresh venv
+
 ```bash
-mkdir -p "$HOME/.venvs"
-/usr/bin/python3 -m venv "$HOME/.venvs/kolla-2026.2"
-source "$HOME/.venvs/kolla-2026.2/bin/activate"
+source "$KOLLA_VENV/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install 'ansible>=13,<15'
 python -m pip install 'git+https://opendev.org/openstack/kolla-ansible@stable/2026.2'
 ```
 
-Run each command only if the preceding command succeeded. If installation fails, stop and investigate rather than continuing with a partial environment. Verify that both executables are in this environment:
+Run each command only after the previous one succeeds. Verify the executable paths and versions:
 
 ```bash
 command -v ansible-playbook
@@ -222,32 +242,42 @@ ansible --version
 kolla-ansible --version
 ```
 
-Both executable paths must begin with `$HOME/.venvs/kolla-2026.2/bin/`. Activate the environment because Kolla invokes Ansible as a subprocess. In a new terminal, activate it again with `source "$HOME/.venvs/kolla-2026.2/bin/activate"`.
+Both executable paths must begin with `$KOLLA_VENV/bin/`. If not, stop; the shell is using the wrong environment.
 
-Check that `/etc/kolla` is **still absent**. Only then create a private configuration directory and copy the installed release's examples, including its multinode inventory:
+### 3.4 Copy only the release-matched examples into the fresh configuration path
+
+Check that the fresh directory is empty or contains only the files created by this procedure. Do not overwrite an existing fresh configuration:
 
 ```bash
-sudo mkdir -m 700 /etc/kolla && sudo chown "$(id -un)":"$(id -gn)" /etc/kolla
+find "$KOLLA_CONFIG_PATH" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
 ```
 
-If creation fails, stop. Otherwise, run:
+If files already exist, stop and inspect them. Otherwise copy the examples from the installed release:
 
 ```bash
-cp -r "$VIRTUAL_ENV/share/kolla-ansible/etc_examples/kolla/." /etc/kolla/ &&
-cp -n "$VIRTUAL_ENV/share/kolla-ansible/ansible/inventory/multinode" /etc/kolla/multinode &&
-chmod 600 /etc/kolla/passwords.yml &&
+cp -r "$VIRTUAL_ENV/share/kolla-ansible/etc_examples/kolla/." "$KOLLA_CONFIG_PATH/" &&
+cp -n "$VIRTUAL_ENV/share/kolla-ansible/ansible/inventory/multinode" "$KOLLA_INVENTORY" &&
+chmod 600 "$KOLLA_CONFIG_PATH/passwords.yml"
+```
+
+Install the release's Ansible collections:
+
+```bash
 kolla-ansible install-deps
 ```
 
-`install-deps` downloads Ansible collections to the manager. It does not deploy the cloud. Check paths without displaying password contents:
+This installs manager-side dependencies only; it does not bootstrap or deploy the nodes. Verify files without displaying passwords:
 
 ```bash
-test -f /etc/kolla/globals.yml && test -f /etc/kolla/passwords.yml && test -f /etc/kolla/multinode && printf '%s\n' 'Example files present'
+test -f "$KOLLA_CONFIG_PATH/globals.yml" &&
+test -f "$KOLLA_CONFIG_PATH/passwords.yml" &&
+test -f "$KOLLA_INVENTORY" &&
+stat -c '%a %n' "$KOLLA_CONFIG_PATH/passwords.yml"
 ```
 
-The sample inventory still contains upstream example hosts. **Do not target it** until the later inventory step replaces all active sample hosts and verifies group membership. Do not generate or print secrets here.
+Do not generate passwords or edit the inventory until the next numbered step. The release inventory still contains sample hosts and is not safe to target yet.
 
-**Expected result:** Virtualenv executables work, dependency installation succeeds and all three example files exist. **Stop if:** destination already exists, installation or dependency download fails, versions/paths are wrong, or a file is missing. Do not deploy or bootstrap.
+**Expected result:** R2D2 has working release-matched executables in `~/.venvs/kolla-fresh`, release examples in `~/openstack-fresh/kolla`, and no node-side changes. **Stop if:** any path is wrong, an old path is used, installation fails, a destination already contains unexpected files, or a command selects Ansible outside the fresh venv.
 
 ## Step 4: Plan and configure node networking
 
