@@ -194,14 +194,21 @@ INVENTORY=$HOME/openstack-fresh/kolla/multinode
 
 Do not use the historical `/etc/kolla`, `~/.venvs/kolla-2026.2`, or `~/fishbone` paths. The Kolla configuration path is selected through the exported `KOLLA_CONFIG_PATH` variable; the default historical configuration remains untouched.
 
-### 3.1 Verify the manager and fresh destinations
+### 3.1 Verify R2D2 and activate the fresh environment
 
-Run the Step 00 path contract first in the R2D2 terminal, then verify:
+Run **this one block** on R2D2. It both activates the fresh environment and verifies the paths. Do not run a second separate path block before it:
 
 ```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
+source "$KOLLA_VENV/bin/activate"
+
 hostname
 . /etc/os-release && printf '%s\n' "$PRETTY_NAME"
-printf 'VENV=%s\nCONFIG=%s\n' "$KOLLA_VENV" "$KOLLA_CONFIG_PATH"
+printf 'VENV=%s\nCONFIG=%s\nINVENTORY=%s\n' \
+  "$VIRTUAL_ENV" "$KOLLA_CONFIG_PATH" "$KOLLA_INVENTORY"
+
 for p in "$KOLLA_VENV" "$KOLLA_CONFIG_PATH"; do
   if [ -e "$p" ] || [ -L "$p" ]; then
     stat -c 'EXISTS %n owner=%U mode=%a' "$p"
@@ -211,7 +218,15 @@ for p in "$KOLLA_VENV" "$KOLLA_CONFIG_PATH"; do
 done
 ```
 
-The venv and configuration directory are expected to exist because Step 00 created them. Stop if either is a symlink, has an unexpected owner or mode, or is not a directory. Do not inspect or copy old passwords.
+Expected paths:
+
+```text
+VENV=/home/joe/.venvs/kolla-fresh
+CONFIG=/home/joe/openstack-fresh/kolla
+INVENTORY=/home/joe/openstack-fresh/kolla/multinode
+```
+
+Expected result: the host is R2D2, the fresh virtual environment is active, and both fresh paths exist as Joe-owned directories. Stop if a path is missing, is a symlink, has an unexpected owner or mode, or the prompt does not show the fresh environment.
 
 ### 3.2 Install manager prerequisites
 
