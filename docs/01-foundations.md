@@ -194,7 +194,7 @@ INVENTORY=$HOME/openstack-fresh/kolla/multinode
 
 Do not use the historical `/etc/kolla`, `~/.venvs/kolla-2026.2`, or `~/fishbone` paths. The Kolla configuration path is selected through the exported `KOLLA_CONFIG_PATH` variable; the default historical configuration remains untouched.
 
-### 3.1 Verify R2D2 and activate the fresh environment
+### Check R2D2 and activate the fresh environment
 
 Run **this one block** on R2D2. It both activates the fresh environment and verifies the paths. Do not run a second separate path block before it:
 
@@ -228,7 +228,7 @@ INVENTORY=/home/joe/openstack-fresh/kolla/multinode
 
 Expected result: the host is R2D2, the fresh virtual environment is active, and both fresh paths exist as Joe-owned directories. Stop if a path is missing, is a symlink, has an unexpected owner or mode, or the prompt does not show the fresh environment.
 
-### 3.2 Install manager prerequisites
+### Install the manager prerequisites
 
 The following changes R2D2 only:
 
@@ -239,7 +239,7 @@ sudo apt install -y git curl python3-dev python3-venv libffi-dev gcc libssl-dev 
 
 Stop if the command fails. No node or OpenStack service is changed by this step.
 
-### 3.3 Install the pinned toolchain in the fresh venv
+### Install Ansible and Kolla-Ansible
 
 ```bash
 source "$KOLLA_VENV/bin/activate"
@@ -259,11 +259,9 @@ kolla-ansible --version
 
 Both executable paths must begin with `$KOLLA_VENV/bin/`. If not, stop; the shell is using the wrong environment.
 
-### 3.4 Prepare the release-matched Kolla configuration
+### Finish the Kolla setup
 
-This section has four separate gates. **Passing one gate does not complete Step 3.4.** Stop after each gate and verify its result.
-
-#### 3.4.1 Inspect the destination — read-only
+First, check the destination. This is read-only:
 
 ```bash
 find "$KOLLA_CONFIG_PATH" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
@@ -271,9 +269,7 @@ find "$KOLLA_CONFIG_PATH" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
 
 **Expected:** no output. If any file is listed, stop and inspect it. Do not overwrite an existing fresh configuration.
 
-#### 3.4.2 Copy the release examples — file change
-
-Run only after 3.4.1 returns no output:
+If the directory is empty, copy the release examples:
 
 ```bash
 cp -r "$VIRTUAL_ENV/share/kolla-ansible/etc_examples/kolla/." "$KOLLA_CONFIG_PATH/" &&
@@ -283,7 +279,7 @@ chmod 600 "$KOLLA_CONFIG_PATH/passwords.yml"
 
 Stop if the command fails. This creates the fresh Kolla configuration, inventory and password-file template. It does not contact or change the nodes.
 
-#### 3.4.3 Install Ansible collections — manager-side change
+Next, install the Ansible collections:
 
 ```bash
 kolla-ansible install-deps
@@ -291,7 +287,7 @@ kolla-ansible install-deps
 
 This installs manager-side dependencies only. It does not bootstrap or deploy the nodes. Stop if it fails.
 
-#### 3.4.4 Verify the completed Step 3.4 result — read-only
+Finally, verify the files:
 
 ```bash
 test -f "$KOLLA_CONFIG_PATH/globals.yml" &&

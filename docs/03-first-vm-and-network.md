@@ -10,7 +10,7 @@ The floating IP in this example is a **LAN address**, not a public Internet addr
 
 ## Step 10: Create the first test VM
 
-### 10.1 Set up the client and authenticate
+### Set up the client and authenticate
 
 **Where:** the management VM. The deployment and configuration validation in Step 9 must have succeeded. Keep cloud configuration, tokens, private keys, console credentials and unredacted logs private.
 
@@ -130,7 +130,7 @@ openstack console url show lab-smoke
 
 Inspect the exact port with `openstack port show '<port-id>'`, replacing the quoted placeholder with the real ID. Inspect its security groups and existing rules. If this preserved VM is separately approved for the networking exercise, record its server ID and set `VM_ID` to that ID in the same terminal before continuing to Step 11; provision guest access only through a separately approved method. The remaining instructions are not permission to change this existing cloud. `ACTIVE` and the private address alone do not establish external reachability.
 
-### 10.2 Key, image and VM prerequisites: fresh path
+### Prepare the key, image and VM
 
 The guest key must exist **before** the first boot. On the management VM, check `~/.ssh/lab-smoke` and `.pub`; if either exists, stop and inspect rather than overwrite. Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git.
 
@@ -172,7 +172,7 @@ grep '  cirros-0.6.3-x86_64-disk.img$' cirros-0.6.3-SHA256SUMS | sha256sum -c -
 
 **Expected output:** the image filename followed by `OK`. Stop if download or checksum verification fails. This checks consistency with the publisher's checksum over HTTPS, not an independent signature.
 
-### 10.3 Create private networking, flavor, image and restricted security group
+### Create the private network and test resources
 
 Only after the inspection and collision gates pass, execute each command separately; stop on failure and record each returned ID. A flavor defines the VM hardware size; an image is the boot disk template.
 
@@ -203,7 +203,7 @@ openstack security group rule list lab-vm-access
 
 **Gate:** confirm only the intended ingress rules and appropriate egress are present. Before reusing an existing group, review its rules, other attached ports and ownership. Do not edit a shared group blindly.
 
-### 10.4 Boot once and check
+### Boot the test VM and check it
 
 Choose a name that does not already exist. On a genuinely fresh installation use `lab-smoke`; if the name belongs to the existing protected VM, stop and choose a **different** name only after separate approval for a new VM. Set the chosen name in this terminal:
 
@@ -229,7 +229,7 @@ openstack port list --server "$VM_ID" --long
 
 ## Step 11: Connect the private network to the provider LAN
 
-### 11.1 Verify the physical and IP plan
+### Verify the physical and IP plan
 
 This path creates a flat external provider network, dedicated router and floating IP; it does **not** reconfigure switches, node interfaces or DHCP. Verify the existing Kolla/Neutron mapping `physnet1:br-ex`, the `provider0` uplink, switch/VLAN and upstream path on the actual hosts before proceeding. A link-up indication alone does not prove that the upstream network works. The external LAN is `192.168.0.0/24`, gateway `192.168.0.1`, and Neutron pool `192.168.0.151–192.168.0.199`. Joe has confirmed that pool is excluded from DHCP; the VIP `.150` is excluded and nodes `.200–.202` are outside the pool. Confirm the pool is also clear of **all** static assignments, current allocations and other Neutron networks with the LAN administrator and the relevant DHCP/IPAM records before assignment; an unanswered ping does not establish availability. The router gateway and floating IP each consume a pool address.
 
@@ -294,7 +294,7 @@ openstack port list --router "$ROUTER_ID"
 
 **Expected output:** external flat `physnet1` network, matching no-DHCP subnet and allocation pool, router with SNAT enabled, external gateway port on the intended subnet, and an interface on the recorded private subnet. Stop if not. In a multi-subnet external network, explicitly verify gateway subnet selection rather than assuming it.
 
-### 11.2 Associate a floating IP with the exact VM port
+### Associate a floating IP with the exact VM port
 
 **Fresh VM:** The group was created in Step 10. Inspect its rules and the port; record the group's unique ID.
 
@@ -353,7 +353,7 @@ openstack server show "$VM_ID" -c status -c addresses
 
 **Expected output:** the FIP shows the recorded VM port, fixed IP and router; the VM remains `ACTIVE`. Record the actual floating address for the tests below. An API association does not test reachability.
 
-### 11.3 Test inbound, outbound and DNS separately
+### Test inbound, outbound and DNS separately
 
 From the trusted LAN client that already holds the matching private key, replace the address with the allocated FIP. Keep private keys on the machine where they were created; if that client lacks an authorized key, provision a separate public key through an approved method rather than moving a private key.
 
@@ -377,7 +377,7 @@ nslookup "$TEST_DOMAIN"
 
 The first tests the private gateway (confirm its actual address from subnet/router if not `.1`); the second tests outbound IP connectivity via SNAT and upstream routing, without relying on DNS; the third tests DNS resolution. ICMP may be blocked even with working routes. A failed lookup can be resolver, DNS egress or upstream policy; a successful lookup alone does not prove outbound application access. Note each PASS, FAIL or NOT TESTED independently. Never claim live connectivity from a simulated or API-only check.
 
-### 11.4 Narrow rollback: only this exercise's changes
+### Roll back only this exercise's changes
 
 Rollback is optional, and it changes real cloud state. Before each command, inspect exact IDs, current associations and dependencies; stop on unexpected changes or concurrent use. Never touch preexisting resources, other ports, unrelated security groups, or shared routers. Keep a record of what this exercise actually created or attached.
 
