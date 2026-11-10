@@ -330,7 +330,7 @@ This step uses three Ansible playbooks in sequence:
 2. **Deploy netplan** — backup existing configs, render node-specific netplan YAML from template, apply with `netplan try`, verify SSH.
 3. **Update /etc/hosts** — ensure consistent hostname resolution across all four systems.
 
-All playbooks live under `~/openstack-fresh/playbooks/` and use the Kolla inventory at `$KOLLA_INVENTORY`.
+All playbooks live under `~/openstack-fresh/playbooks/` and use a **simple inventory** at `~/openstack-fresh/playbooks/inventory.yml` (created in Step 3). This inventory uses the known node IPs and SSH key from Step 2. The Kolla multinode inventory at `$KOLLA_INVENTORY` is not used until Step 5.
 
 ### Step 4A — Gather network facts
 
@@ -339,7 +339,7 @@ Run on R2D2 to collect hardware details from all three nodes:
 ```bash
 cd ~/openstack-fresh
 source "$KOLLA_VENV/bin/activate"
-ansible-playbook -i "$KOLLA_INVENTORY" playbooks/netplan-gather-facts.yml
+ansible-playbook -i playbooks/inventory.yml playbooks/netplan-gather-facts.yml
 ```
 
 **Pass when:** playbook completes without error and creates `/tmp/netplan-facts/netplan-facts-<node>.json` for each node.
@@ -363,7 +363,7 @@ Edit `playbooks/group_vars/all.yml` with the verified MAC addresses and planned 
 Then run the deployment playbook:
 
 ```bash
-ansible-playbook -i "$KOLLA_INVENTORY" playbooks/netplan-deploy.yml
+ansible-playbook -i playbooks/inventory.yml playbooks/netplan-deploy.yml
 ```
 
 This playbook performs the following on each node, in order:
@@ -390,7 +390,7 @@ This playbook performs the following on each node, in order:
 Run the hosts management playbook on all three nodes plus the manager (deployment host):
 
 ```bash
-ansible-playbook -i "$KOLLA_INVENTORY" playbooks/hosts-file.yml
+ansible-playbook -i playbooks/inventory.yml playbooks/hosts-file.yml
 ```
 
 This playbook:
@@ -412,10 +412,10 @@ This playbook:
 Run a quick Ansible check to confirm everything is consistent:
 
 ```bash
-ansible -i "$KOLLA_INVENTORY" control:deployment -m ansible.builtin.command \
+ansible -i playbooks/inventory.yml control:deployment -m ansible.builtin.command \
   -a 'ip -brief address show mgmt0' -e '{"ansible_become": false}'
 
-ansible -i "$KOLLA_INVENTORY" control:deployment -m ansible.builtin.command \
+ansible -i playbooks/inventory.yml control:deployment -m ansible.builtin.command \
   -a 'getent hosts node1 node2 node3' -e '{"ansible_become": false}'
 ```
 
