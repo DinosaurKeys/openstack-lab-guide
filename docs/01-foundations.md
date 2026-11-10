@@ -385,6 +385,44 @@ This playbook performs the following on each node, in order:
 
 **Stop if:** any node fails, MACs are wrong, SSH test fails, or `netplan try` is not accepted.
 
+### Step 4B Verification — View deployed netplan
+
+Run on R2D2 to see the exact configuration deployed on each node:
+
+```bash
+ansible -i playbooks/inventory.yml control -m ansible.builtin.command \
+  -a 'cat /etc/netplan/90-openstack-lab.yaml' -e '{"ansible_become": true}' -b
+```
+
+**Expected output per node** (MACs and IPs differ per host):
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    mgmt0:
+      match:
+        macaddress: "THIS_NODE_MANAGEMENT_MAC"
+      set-name: mgmt0
+      dhcp4: false
+      dhcp6: false
+      addresses: ["THIS_NODE_MGMT_IP/24"]
+      routes:
+        - to: default
+          via: "192.168.0.1"
+      nameservers:
+        addresses: ["192.168.0.1"]
+    provider0:
+      match:
+        macaddress: "THIS_NODE_PROVIDER_MAC"
+      set-name: provider0
+      dhcp4: false
+      dhcp6: false
+      optional: true
+```
+
+Verify each node shows its own management MAC, management IP, and provider MAC. The `provider0` interface has no configured IP (Layer-2 only for Neutron).
+
 ### Step 4C — Update /etc/hosts on all systems
 
 Run the hosts management playbook on all three nodes plus the manager (deployment host):
