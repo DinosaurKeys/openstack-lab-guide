@@ -320,157 +320,105 @@ Do not generate passwords or edit the inventory yet. The copied inventory still 
 
 **Step 3 result:** R2D2 has release-matched executables in `~/.venvs/kolla-fresh`, release examples in `~/openstack-fresh/kolla`, and no node-side changes.
 
-## Step 4: Plan and configure node networking
+## Step 4: Plan and configure node networking with Ansible
 
-**Goal:** Give all nodes stable, consistently named management and provider interfaces. **Where:** Work on one physical node console at a time, with a separate manager terminal for SSH tests. **Prerequisites:** Steps 1–2 complete, correct switch/VLAN and addresses checked, working physical or out-of-band console and a second test shell. A remote SSH connection alone is not a recovery console.
+**Goal:** Give all nodes stable, consistently named management and provider interfaces using Ansible. **Where:** Run playbooks from the management VM (R2D2). **Prerequisites:** Steps 1–3 complete, SSH access and passwordless sudo verified on all nodes, correct switch/VLAN and addresses checked, working physical or out-of-band console available for recovery.
 
-### Step 4A — Inspect before editing
+This step uses three Ansible playbooks in sequence:
 
-Start on the console of **node1 only**. Repeat the entire procedure later on node2 and node3:
+1. **Gather facts** — collect MAC addresses, current interfaces, routes, and DNS from each node.
+2. **Deploy netplan** — backup existing configs, render node-specific netplan YAML from template, apply with `netplan try`, verify SSH.
+3. **Update /etc/hosts** — ensure consistent hostname resolution across all four systems.
 
-```bash
-hostname
-ip -brief link
-ip -brief address
-ip route
-resolvectl status
-for p in /sys/class/net/*/address; do printf '%s ' "${p%/address}"; cat "$p"; done
-sudo ls -la /etc/netplan
-sudo cat /etc/netplan/*.yaml
-```
+All playbooks live under `~/openstack-fresh/playbooks/` and use the Kolla inventory at `$KOLLA_INVENTORY`.
 
-Identify both physical MACs by matching the actual cables and ports on this host, not another node's labels. Record existing addresses, routes, DNS resolver IPs and DNS search domains separately. Ensure the gateway and resolver are correct for this LAN and preserve any required routes or DNS search domains in the draft. Review **every** active YAML file, including cloud-init-generated files, for overlapping definitions. Also review cloud-init's network ownership. If multiple files, unusual settings, VLANs, bonds or cloud-init regeneration make a safe replacement unclear, stop and design a host-specific migration rather than applying the simple recipe below.
+### Step 4A — Gather network facts
 
-### Step 4B — Back up and draft
-
-The following example assumes exactly one active file, `/etc/netplan/50-cloud-init.yaml`, with no competing active network definitions. If that is not the case, stop and adapt all paths and the rollback plan before editing. Confirm the `.disabled`, `.failed`, new file and backup destinations are absent. On this node:
+Run on R2D2 to collect hardware details from all three nodes:
 
 ```bash
-for p in /etc/netplan/50-cloud-init.yaml.disabled /etc/netplan/90-openstack-lab.yaml /etc/netplan/90-openstack-lab.yaml.failed /root/netplan-pre-openstack.yaml; do
-  if sudo test -e "$p"; then printf 'EXISTS: %s — stop and inspect\n' "$p"; else printf 'Absent: %s\n' "$p"; fi
-done
+cd ~/openstack-fresh
+source "$KOLLA_VENV/bin/activate"
+ansible-playbook -i "$KOLLA_INVENTORY" playbooks/netplan-gather-facts.yml
 ```
 
-Only if all are absent, back up and compare the original:
+**Pass when:** playbook completes without error and creates `/tmp/netplan-facts/netplan-facts-<node>.json` for each node.
+
+**Inspect the facts:**
 
 ```bash
-sudo cp -a /etc/netplan/50-cloud-init.yaml /root/netplan-pre-openstack.yaml &&
-sudo cmp -s /etc/netplan/50-cloud-init.yaml /root/netplan-pre-openstack.yaml &&
-printf '%s\n' 'Backup verified'
+cat /tmp/netplan-facts/netplan-facts-node1.json | jq .
+cat /tmp/netplan-facts/netplan-facts-node2.json | jq .
+cat /tmp/netplan-facts/netplan-facts-node3.json | jq .
 ```
 
-If the message does not appear, stop. Create an inactive draft in your home directory. Inspect any existing draft first rather than blindly replacing it:
+Verify the `mgmt_mac` and `provider_mac` values match the physical cables on each node. If MACs are wrong, edit `playbooks/group_vars/all.yml` with the correct values before continuing.
+
+**Stop if:** any fact file is missing, MACs don't match physical ports, or playbook fails.
+
+### Step 4B — Deploy netplan configuration
+
+Edit `playbooks/group_vars/all.yml` with the verified MAC addresses and planned addresses for each node. The file already contains the expected values from the lab plan; confirm they match the gathered facts.
+
+Then run the deployment playbook:
 
 ```bash
-nano ~/90-openstack-lab.yaml.draft
+ansible-playbook -i "$KOLLA_INVENTORY" playbooks/netplan-deploy.yml
 ```
 
-For this simple single-file case, paste the following. Replace **both** MACs with this node's verified MACs, the address with the appropriate one from the table, and the resolver with the inspected DNS server. Preserve required other settings and routes. `192.168.0.1` is the planned gateway, not automatically the DNS server.
+This playbook performs the following on each node, in order:
 
-```yaml
-network:
-  version: 2
-  ethernets:
-    mgmt0:
-      match:
-        macaddress: "THIS_NODE_MANAGEMENT_MAC"
-      set-name: mgmt0
-      dhcp4: false
-      dhcp6: false
-      addresses: ["THIS_NODE_ADDRESS/24"]
-      routes:
-        - to: default
-          via: "192.168.0.1"
-      nameservers:
-        addresses: ["VERIFIED_DNS_SERVER_IP"]
-    provider0:
-      match:
-        macaddress: "THIS_NODE_PROVIDER_MAC"
-      set-name: provider0
-      dhcp4: false
-      dhcp6: false
-      optional: true
-```
+1. Validates that `node_network_map` has an entry for the target host.
+2. Backs up all existing `/etc/netplan/*.yaml` files to a timestamped directory under `/root/`.
+3. Verifies each backup with `cmp`.
+4. Renders the netplan template (`playbooks/templates/90-openstack-lab.yaml.j2`) using the node's MACs, address, gateway, and DNS.
+4. Installs the new config as `/etc/netplan/90-openstack-lab.yaml` (mode 0600, root:root).
+5. Disables the old cloud-init file (`50-cloud-init.yaml → 50-cloud-init.yaml.disabled`).
+6. Runs `netplan generate` to validate syntax.
+7. Runs `netplan try --timeout 120` — the configuration is only kept if you accept it at the console prompt.
+8. Verifies `mgmt0` and `provider0` interfaces are up with correct addresses and routes.
+9. Tests SSH from the manager to the new management address.
 
-Save with Ctrl+O, Enter, Ctrl+X, then review `cat ~/90-openstack-lab.yaml.draft`. Check indentation, both MACs, address, DNS and routes. The provider NIC must have no configured IPv4 address or default route. An automatic IPv6 link-local address is not a provider-subnet address.
+**Pass when:** playbook completes without error, all assertions pass, and SSH test returns the correct hostname for each node.
 
-### Step 4C — Stage, try and verify
+**Recovery:** if `netplan try` times out or you reject it, the playbook fails. The node reverts to the previous configuration automatically. The backup directory under `/root/netplan-backup-<timestamp>/` contains the original files for manual restore if needed.
 
-After all checks pass and the recovery console is ready, install the reviewed draft on that node and park the old file. `install` here copies a file; it does not install software. The commands stop at the first error:
+**Stop if:** any node fails, MACs are wrong, SSH test fails, or `netplan try` is not accepted.
+
+### Step 4C — Update /etc/hosts on all systems
+
+Run the hosts management playbook on all three nodes plus the manager (deployment host):
 
 ```bash
-sudo test ! -e /etc/netplan/90-openstack-lab.yaml &&
-sudo test ! -L /etc/netplan/90-openstack-lab.yaml &&
-sudo install -o root -g root -m 600 ~/90-openstack-lab.yaml.draft /etc/netplan/90-openstack-lab.yaml &&
-sudo mv -n /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.disabled &&
-! sudo test -e /etc/netplan/50-cloud-init.yaml &&
-sudo test -f /etc/netplan/50-cloud-init.yaml.disabled &&
-sudo netplan generate
+ansible-playbook -i "$KOLLA_INVENTORY" playbooks/hosts-file.yml
 ```
 
-The checks after `mv -n` matter: on some systems it exits successfully even when it skipped an existing destination. If the old filename remains, stop. Do not treat the move as successful.
+This playbook:
 
-If anything fails, stop and inspect which files actually exist. Do not reboot while the file set is unverified. If both the new file and the parked old file exist and the original filename is absent, restore this specific file set as follows (first ensure the `.failed` destination is absent):
+1. Backs up `/etc/hosts` on each target to `/root/hosts-pre-openstack-<timestamp>`.
+2. Verifies the backup with `cmp`.
+3. Replaces `/etc/hosts` with a generated file containing:
+   - Standard localhost and IPv6 lines
+   - `192.168.0.200 node1`, `192.168.0.201 node2`, `192.168.0.202 node3`
+   - The manager's address (if `manager_address` is set in the playbook vars)
+4. Runs `getent hosts node1 node2 node3` on each system to verify resolution.
+
+**Pass when:** playbook completes without error and every system resolves all three node names to the correct planned addresses.
+
+**Stop if:** any backup fails, resolution returns wrong addresses, or playbook errors.
+
+### Step 4D — Final verification from manager
+
+Run a quick Ansible check to confirm everything is consistent:
 
 ```bash
-sudo mv -n /etc/netplan/90-openstack-lab.yaml /etc/netplan/90-openstack-lab.yaml.failed &&
-! sudo test -e /etc/netplan/90-openstack-lab.yaml &&
-sudo test -f /etc/netplan/90-openstack-lab.yaml.failed &&
-sudo mv -n /etc/netplan/50-cloud-init.yaml.disabled /etc/netplan/50-cloud-init.yaml &&
-! sudo test -e /etc/netplan/50-cloud-init.yaml.disabled &&
-sudo test -f /etc/netplan/50-cloud-init.yaml &&
-sudo netplan generate
+ansible -i "$KOLLA_INVENTORY" control:deployment -m ansible.builtin.command \
+  -a 'ip -brief address show mgmt0' -e '{"ansible_become": false}'
+
+ansible -i "$KOLLA_INVENTORY" control:deployment -m ansible.builtin.command \
+  -a 'getent hosts node1 node2 node3' -e '{"ansible_become": false}'
 ```
 
-Check the filenames and generated result. If a partial staging failure left a different file set, stop and restore manually from the verified backup rather than running this blindly. `netplan generate` validates and generates the configuration, but does not apply the network.
+**Pass when:** all four systems show `mgmt0` with the correct planned address, and every hostname resolves to the correct IP.
 
-From the **same node's recovery console**, try the new network:
-
-```bash
-sudo netplan try
-```
-
-While the confirmation countdown runs, check from a second console/TTY on the node:
-
-```bash
-ip -brief link
-ip -brief address
-ip route
-resolvectl status
-ping -c 3 192.168.0.1
-```
-
-Also from the **manager**, substitute the administrator username and this node's new address:
-
-```bash
-ssh -i "$HOME/.ssh/openstack_lab_ed25519" ADMIN_USER@THIS_NODE_ADDRESS hostname
-```
-
-Accept at the `netplan try` prompt only if SSH returns the right hostname, `mgmt0` has the planned address and default route via `192.168.0.1`, DNS is correct, the gateway responds, and `provider0` shows `LOWER_UP` without a configured provider address or default route. If any check fails, do not accept. Let the timer expire, verify runtime rollback from the console, and restore the on-disk file set as above before rebooting or retrying. A Netplan timeout does **not** guarantee that the filenames themselves are restored. Verify actual runtime and files, and keep the backup.
-
-Repeat the inspection, backup, drafting, try and verification separately for node2 and node3. Use each host's own MACs and address. Do not assume an SSH host-key warning after an address change is safe: independently verify its fingerprint.
-
-### Step 4D — Hostname resolution
-
-On **each of the four systems**, inspect and back up `/etc/hosts` before editing:
-
-```bash
-cat /etc/hosts
-if sudo test -e /root/hosts-pre-openstack; then
-  printf '%s\n' 'Backup exists; stop and inspect.'
-else
-  sudo cp -a /etc/hosts /root/hosts-pre-openstack && sudo cmp -s /etc/hosts /root/hosts-pre-openstack && printf '%s\n' 'Backup verified'
-fi
-```
-
-Only after verifying the backup, edit with `sudo nano /etc/hosts`. Preserve localhost and IPv6 lines. Add exactly one mapping per node: `192.168.0.200 node1`, `192.168.0.201 node2`, `192.168.0.202 node3`. Replace a node's existing `127.0.1.1 nodeX` mapping instead of adding a conflicting duplicate. Keep the manager's own local mapping. Add a manager LAN alias on other hosts only if its IP is static or DHCP-reserved. Then run on **each** system:
-
-```bash
-getent hosts node1
-getent hosts node2
-getent hosts node3
-```
-
-Each lookup should return the node's planned address. If not, resolve duplicates or DNS/NSS precedence. From the manager, verify SSH to all three final addresses again. Inventory-based Ansible tests follow after the release inventory is configured.
-
-**Expected result:** All three nodes have a working management IP, DNS, gateway and SSH. Each has a distinct, linked `provider0` on the same intended home LAN with no host provider IP. Hostnames resolve consistently. **Stop if:** any network check, rollback, resolution or SSH test fails, or if the switch/VLAN and address allocation are unverified. Proceed to inventory configuration only after all three pass. This is connectivity preparation, not proof that floating IPs or OpenStack work.
+**Expected result:** All three nodes have a working management IP, DNS, gateway and SSH. Each has a distinct, linked `provider0` on the same intended home LAN with no host provider IP. Hostnames resolve consistently across all four systems. **Stop if:** any check fails or the switch/VLAN and address allocation are unverified. Proceed to inventory configuration only after all pass.
