@@ -137,7 +137,7 @@ It must return the expected node hostname without a node account-password prompt
 
 **Expected result:** All three identity-checked SSH tests return their respective hostnames. **Stop if:** fingerprints differ, authentication fails, or the wrong host answers. Fix that node before proceeding with node-targeting operations. Manager-only installation can still proceed.
 
-### Step 2a: Configure non-interactive sudo for Ansible
+### Step 2A: Configure non-interactive sudo for Ansible
 
 **Goal:** Allow the approved `joe` account to run privileged Ansible and Kolla actions without an interactive sudo password prompt. **Where:** Run the following procedure separately on R2D2 and each node. **Prerequisites:** SSH access is established, the target host is verified, and Joe has explicitly accepted the security scope.
 
@@ -196,7 +196,7 @@ INVENTORY=$HOME/openstack-fresh/kolla/multinode
 
 Do not use the historical `/etc/kolla`, `~/.venvs/kolla-2026.2`, or `~/fishbone` paths. The Kolla configuration path is selected through the exported `KOLLA_CONFIG_PATH` variable; the default historical configuration remains untouched.
 
-### Gate 1 of 6 — Confirm R2D2 and activate the fresh environment
+### Step 3A — Confirm R2D2 and activate the fresh environment
 
 Run this on R2D2. It activates the fresh environment and verifies the paths in one pass:
 
@@ -230,7 +230,7 @@ INVENTORY=/home/joe/openstack-fresh/kolla/multinode
 
 **Stop if:** a path is missing, is a symlink, has an unexpected owner or mode, or the prompt does not show the fresh environment.
 
-### Gate 2 of 6 — Install the manager prerequisites
+### Step 3B — Install the manager prerequisites
 
 Run on R2D2. This changes R2D2 only:
 
@@ -241,7 +241,7 @@ sudo apt install -y git curl python3-dev python3-venv libffi-dev gcc libssl-dev 
 
 **Pass when:** the command finishes without error. No node or OpenStack service is touched.
 
-### Gate 3 of 6 — Install Ansible and Kolla-Ansible
+### Step 3C — Install Ansible and Kolla-Ansible
 
 Run on R2D2:
 
@@ -265,7 +265,7 @@ kolla-ansible --version
 
 **Stop if:** a path resolves outside the fresh environment. Activating the environment matters because Kolla starts Ansible as a subprocess.
 
-### Gate 4 of 6 — Inspect the fresh configuration directory
+### Step 3D — Inspect the fresh configuration directory
 
 Read-only check on R2D2:
 
@@ -277,9 +277,9 @@ find "$KOLLA_CONFIG_PATH" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
 
 **Stop if:** any file is listed. Inspect it instead of overwriting an existing fresh configuration.
 
-### Gate 5 of 6 — Copy the release examples and install collections
+### Step 3E — Copy the release examples and install collections
 
-Run on R2D2, only after Gate 4 passes:
+Run on R2D2, only after Step 3D passes:
 
 ```bash
 cp -r "$VIRTUAL_ENV/share/kolla-ansible/etc_examples/kolla/." "$KOLLA_CONFIG_PATH/" &&
@@ -303,7 +303,7 @@ This installs manager-side dependencies only. It does not bootstrap or deploy th
 
 **Pass when:** the command finishes without error.
 
-### Gate 6 of 6 — Verify the toolchain and configuration
+### Step 3F — Verify the toolchain and configuration
 
 Read-only check on R2D2:
 
@@ -324,7 +324,7 @@ Do not generate passwords or edit the inventory yet. The copied inventory still 
 
 **Goal:** Give all nodes stable, consistently named management and provider interfaces. **Where:** Work on one physical node console at a time, with a separate manager terminal for SSH tests. **Prerequisites:** Steps 1–2 complete, correct switch/VLAN and addresses checked, working physical or out-of-band console and a second test shell. A remote SSH connection alone is not a recovery console.
 
-### Gate 1 of 4 — Inspect before editing
+### Step 4A — Inspect before editing
 
 Start on the console of **node1 only**. Repeat the entire procedure later on node2 and node3:
 
@@ -341,7 +341,7 @@ sudo cat /etc/netplan/*.yaml
 
 Identify both physical MACs by matching the actual cables and ports on this host, not another node's labels. Record existing addresses, routes, DNS resolver IPs and DNS search domains separately. Ensure the gateway and resolver are correct for this LAN and preserve any required routes or DNS search domains in the draft. Review **every** active YAML file, including cloud-init-generated files, for overlapping definitions. Also review cloud-init's network ownership. If multiple files, unusual settings, VLANs, bonds or cloud-init regeneration make a safe replacement unclear, stop and design a host-specific migration rather than applying the simple recipe below.
 
-### Gate 2 of 4 — Back up and draft
+### Step 4B — Back up and draft
 
 The following example assumes exactly one active file, `/etc/netplan/50-cloud-init.yaml`, with no competing active network definitions. If that is not the case, stop and adapt all paths and the rollback plan before editing. Confirm the `.disabled`, `.failed`, new file and backup destinations are absent. On this node:
 
@@ -394,7 +394,7 @@ network:
 
 Save with Ctrl+O, Enter, Ctrl+X, then review `cat ~/90-openstack-lab.yaml.draft`. Check indentation, both MACs, address, DNS and routes. The provider NIC must have no configured IPv4 address or default route. An automatic IPv6 link-local address is not a provider-subnet address.
 
-### Gate 3 of 4 — Stage, try and verify
+### Step 4C — Stage, try and verify
 
 After all checks pass and the recovery console is ready, install the reviewed draft on that node and park the old file. `install` here copies a file; it does not install software. The commands stop at the first error:
 
@@ -450,7 +450,7 @@ Accept at the `netplan try` prompt only if SSH returns the right hostname, `mgmt
 
 Repeat the inspection, backup, drafting, try and verification separately for node2 and node3. Use each host's own MACs and address. Do not assume an SSH host-key warning after an address change is safe: independently verify its fingerprint.
 
-### Gate 4 of 4 — Hostname resolution
+### Step 4D — Hostname resolution
 
 On **each of the four systems**, inspect and back up `/etc/hosts` before editing:
 
