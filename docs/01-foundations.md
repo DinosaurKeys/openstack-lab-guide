@@ -450,13 +450,17 @@ This playbook:
 Run a quick Ansible check to confirm everything is consistent:
 
 ```bash
-ansible -i playbooks/inventory.yml control:deployment -m ansible.builtin.command \
+# Check mgmt0 on the three OpenStack nodes only.
+ansible -i playbooks/inventory.yml control -m ansible.builtin.command \
   -a 'ip -brief address show mgmt0' -e '{"ansible_become": false}'
 
-ansible -i playbooks/inventory.yml control:deployment -m ansible.builtin.command \
+# Check hostname resolution on the three nodes and the deployment host.
+ansible -i playbooks/inventory.yml 'control:deployment' -m ansible.builtin.command \
   -a 'getent hosts node1 node2 node3' -e '{"ansible_become": false}'
 ```
 
-**Pass when:** all four systems show `mgmt0` with the correct planned address, and every hostname resolves to the correct IP.
+`control:deployment` is an Ansible host-pattern union: it targets both the `control` group and the `deployment` group. The deployment host is `localhost`, which does not use the nodes' `mgmt0` interface, so the interface check must target `control` only.
+
+**Pass when:** all three nodes show `mgmt0` with the correct planned address, and all four systems resolve every hostname to the correct IP.
 
 **Expected result:** All three nodes have a working management IP, DNS, gateway and SSH. Each has a distinct, linked `provider0` on the same intended home LAN with no host provider IP. Hostnames resolve consistently across all four systems. **Stop if:** any check fails or the switch/VLAN and address allocation are unverified. Proceed to inventory configuration only after all pass.

@@ -56,16 +56,51 @@ node3
 # Empty until a storage design and hosts are selected.
 ```
 
-Replace or remove **all** active upstream example hosts, including `control01`, `network01`, `compute01`, `monitoring01`, and `storage01`. Leave `[deployment]` and all child groups and their mappings intact, including `[loadbalancer:children]` → `network`. Do not rename hyphenated groups. Configure the actual SSH account and key from the earlier SSH setup in the existing `[all:vars]` section, adding it only if absent:
+Replace or remove **all** active upstream example hosts, including `control01`, `network01`, `compute01`, `monitoring01`, and `storage01`. Leave `[deployment]` and all child groups and their mappings intact, including `[loadbalancer:children]` → `network`. Do not rename hyphenated groups.
+
+### Find the three `[all:vars]` values
+
+These values come from the SSH and privilege checks in Step 2. They describe how Ansible connects from R2D2 to the physical nodes:
+
+| Variable | Meaning | Where to get it |
+|---|---|---|
+| `ansible_user` | The normal administrator account on the nodes; it is not necessarily the same as the inventory hostname. | The account used successfully in the Step 2 SSH test. For this lab, it is `joe`. |
+| `ansible_private_key_file` | The private SSH key stored on R2D2. This is an absolute path on the management VM, not a path on the nodes. | The key created or selected in Step 2. For this lab, verify `/home/joe/.ssh/openstack_lab_ed25519` exists. Never copy or display its contents. |
+| `ansible_become` | Tells Ansible to use `sudo` for privileged tasks. `true` does not contain a password. | Set it to `true` after `sudo -n id -u` returns `0` on every node. |
+
+Run this read-only verification on R2D2 before editing the inventory. It does not display the private key or any password:
+
+```bash
+KEY="$HOME/.ssh/openstack_lab_ed25519"
+NODE_USER="joe"
+
+if [ ! -f "$KEY" ]; then
+  printf 'STOP: SSH private key not found: %s\\n' "$KEY"
+  exit 1
+fi
+
+stat -c 'SSH key path=%n owner=%U mode=%a' "$KEY"
+
+for address in 192.168.0.200 192.168.0.201 192.168.0.202; do
+  printf '\\n--- %s ---\\n' "$address"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 \\
+    -i "$KEY" "$NODE_USER@$address" \\
+    'printf "remote_user=%s\\n" "$(id -un)"; printf "sudo_uid="; sudo -n id -u'
+done
+```
+
+**Pass when:** the key exists on R2D2, each node reports `remote_user=joe`, and each node reports `sudo_uid=0`. Stop if SSH or non-interactive sudo fails; do not guess the values.
+
+If the `[all:vars]` section is missing from the release-provided inventory, add it at the bottom of `$KOLLA_CONFIG_PATH/multinode`. For this lab, the verified section is:
 
 ```ini
 [all:vars]
-ansible_user=REPLACE_WITH_NODE_ADMIN_USER
-ansible_private_key_file=REPLACE_WITH_ABSOLUTE_PRIVATE_KEY_PATH
-ansible_become=True
+ansible_user=joe
+ansible_private_key_file=/home/joe/.ssh/openstack_lab_ed25519
+ansible_become=true
 ```
 
-Replace both placeholders with the verified values. The key path is on the management VM. Never put a sudo password here. Preserve any other needed variables, avoid duplicate active assignments, and save the file. Leave storage and monitoring disabled in globals until independently planned.
+Do not put a sudo password in the inventory. If a deployment requires an interactive sudo password, enter it only through Ansible's secure prompt. Preserve any other needed variables, avoid duplicate active assignments, and save the file. Leave storage and monitoring disabled in globals until independently planned.
 
 Parse the inventory, then inspect the graph:
 
