@@ -199,14 +199,32 @@ print('YAML syntax and unique keys OK')
 PY
 ```
 
-Stop on any error and fix it. For a **new installation only**, generate missing passwords in the existing release-provided `$KOLLA_CONFIG_PATH/passwords.yml`:
+Stop on any error and fix it. For a **new installation only**, make a one-time verified backup before generating missing passwords. Do not regenerate credentials for an existing deployment:
 
 ```bash
-umask 077
-kolla-genpwd && chmod 600 $KOLLA_CONFIG_PATH/passwords.yml
+if [ -e "$KOLLA_CONFIG_PATH/passwords.yml.pre-kolla-genpwd" ]; then
+  printf '%s\n' 'STOP: passwords backup already exists; inspect it before continuing.'
+else
+  cp -a "$KOLLA_CONFIG_PATH/passwords.yml" \
+    "$KOLLA_CONFIG_PATH/passwords.yml.pre-kolla-genpwd" &&
+  cmp -s "$KOLLA_CONFIG_PATH/passwords.yml" \
+    "$KOLLA_CONFIG_PATH/passwords.yml.pre-kolla-genpwd" &&
+  printf '%s\n' 'Passwords backup verified.'
+fi
 ```
 
-**Expected:** command succeeds and the file is mode 600 (`stat -c '%a %n' $KOLLA_CONFIG_PATH/passwords.yml`). Keep a protected, private backup. Do not print the file or blindly regenerate credentials for an existing deployment.
+Then generate the credentials using the **explicit fresh configuration path**:
+
+```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+source "$KOLLA_VENV/bin/activate"
+umask 077
+kolla-genpwd -p "$KOLLA_CONFIG_PATH/passwords.yml" &&
+  chmod 600 "$KOLLA_CONFIG_PATH/passwords.yml"
+```
+
+The `-p` option is required here because `kolla-genpwd` otherwise defaults to `/etc/kolla/passwords.yml`; `KOLLA_CONFIG_PATH` alone does not select the password file for this command. The backup allows restoration of the previous file if needed. **Expected:** the command succeeds and the file is mode 600 (`stat -c '%a %n' "$KOLLA_CONFIG_PATH/passwords.yml"`). Keep the backup private. Do not print the file or blindly regenerate credentials for an existing deployment.
 
 ## Step 8: Verify sudo, bootstrap and precheck
 
@@ -241,7 +259,9 @@ For the verified interactive alternative, use `export ANSIBLE_BECOME_ASK_PASS=tr
 **Firewall safety:** the release's baremetal bootstrap can disable UFW and set an allow policy. The extra variable below skips that firewall-management task; it does not enable UFW, open ports, or prove current rules permit traffic. Inspect existing firewall state and rules on each node, and review service-specific ports, traffic directions and trusted sources before applying any default-deny policy. Keep console recovery available.
 
 ```bash
-kolla-ansible bootstrap-servers -i $KOLLA_CONFIG_PATH/multinode -e disable_firewall=false
+kolla-ansible bootstrap-servers \
+  -i "$KOLLA_CONFIG_PATH/multinode" \
+  -e disable_firewall=false
 ```
 
 **Expected:** successful completion and no failed/unreachable hosts. If it fails, stop and inspect the failed task and each host before retrying. Some changes may already have occurred. Do not proceed to prechecks until bootstrap succeeds.
@@ -249,17 +269,40 @@ kolla-ansible bootstrap-servers -i $KOLLA_CONFIG_PATH/multinode -e disable_firew
 For the lab's default `quay.io/openstack.kolla` testing images, explicitly acknowledge test images:
 
 ```bash
-kolla-ansible prechecks -i $KOLLA_CONFIG_PATH/multinode --use-test-images
+kolla-ansible prechecks \
+  -i "$KOLLA_CONFIG_PATH/multinode" \
+  --use-test-images
 ```
 
 **Expected:** no failed/unreachable hosts. Stop, resolve the issue, and rerun this gate on failure. The flag acknowledges testing images; it neither deploys services nor proves image availability or a working cloud. For another registry, review its settings rather than blindly using the flag. Kolla output can expose secrets even in skipped or failed tasks; do not share raw output. If you need assistance, provide only carefully sanitized failure details and recap.
+
+### 101 explanation — prepare first, deploy second
+
+The two commands have different jobs:
+
+```text
+R2D2 → bootstrap-servers → prepare Ubuntu nodes
+     → prechecks         → verify readiness
+     → deploy            → install and start OpenStack services
+```
+
+**`bootstrap-servers` means:** prepare the three physical Ubuntu nodes. It can install host prerequisites, prepare Docker and Kolla directories, and apply required host settings. It changes the node operating systems but does not deploy the OpenStack control plane.
+
+**`-i "$KOLLA_CONFIG_PATH/multinode"` means:** use the Kolla inventory to decide which machines are `control`, `network`, `compute`, and other roles.
+
+**`-e disable_firewall=false` means:** do not let the bootstrap firewall task disable or reconfigure the host firewall. It does not enable UFW, open ports, or prove that required traffic is allowed.
+
+**`deploy` means:** install and start the configured OpenStack services. It reads the inventory, `globals.yml`, and generated `passwords.yml`, then creates and configures services such as MariaDB, RabbitMQ, HAProxy, Keystone, Glance, Nova, Neutron and Horizon.
+
+A VMware analogy: **bootstrap prepares the ESXi hosts; deploy installs and starts the workloads.** Bootstrap and prechecks must pass before deployment. Deployment is a real infrastructure change, not a dry run.
 
 ## Step 9: Deploy and validate
 
 **Goal:** Install the configured services and validate the generated configuration. **Where:** the management VM with the same venv and tested sudo mode active. This is a real host and cloud change, not a dry run. Continue only after Steps 5–8 pass, the exact targets are reviewed, and the fresh deployment is authorized.
 
 ```bash
-kolla-ansible deploy -i $KOLLA_CONFIG_PATH/multinode
+kolla-ansible deploy \
+  -i "$KOLLA_CONFIG_PATH/multinode"
 ```
 
 **Expected:** the command finishes successfully and its recap has no failed or unreachable hosts. Image downloads and initialization can take time. If it fails, stop. A partial deployment may exist. Investigate locally without posting logs or replacing credentials, and do not retry blindly.
