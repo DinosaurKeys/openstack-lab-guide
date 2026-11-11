@@ -49,6 +49,7 @@ These values are drafts for this lab, not universal defaults. Being outside the 
 | [7. Kolla configuration](docs/02-deploy-openstack.md#step-7-configure-globals-and-protect-passwords) | Configure interfaces and VIP; protect secrets. |
 | [8. Bootstrap and prechecks](docs/02-deploy-openstack.md#step-8-verify-sudo-bootstrap-and-precheck) | Prepare hosts and stop on failing prerequisites. |
 | [9. Deploy and verify](docs/02-deploy-openstack.md#step-9-deploy-and-validate) | Deploy the control plane and verify the reported APIs and agents. |
+| [Recovery after shutdown/reboot](docs/SHUTDOWN-AND-RECOVERY.md) | Perform read-only post-reboot checks, make an evidence-based recovery decision, and restart one approved service when required. |
 | [10. Test VM](docs/03-first-vm-and-network.md#step-10-create-the-first-test-vm) | Create a private network, image, keypair and small VM. |
 | [11. Floating IP and security](docs/03-first-vm-and-network.md#step-11-connect-the-private-network-to-the-provider-lan) | Connect the VM to the provider network with restricted access; test each layer. |
 | [12. Cinder storage](docs/04-storage-operations-extensions.md#step-12-plan-cinder-block-storage) | Inspect the existing SSDs and validate the LVM design before enabling storage. |
@@ -64,7 +65,7 @@ Steps 12–15 are follow-on exercises. Leave a storage design disabled until it 
 
 For Joe's fresh build, start with [Step 00](docs/00-management-vm.md), then identify the reinstalled nodes in Step 1. Do not assume the old VM or networks still exist. The [VM and networking chapter](docs/03-first-vm-and-network.md) explains the fresh-build path and how an existing VM differs.
 
-For a deployed cloud, consult `docs/SHUTDOWN-AND-RECOVERY.md` in the existing `openstack-lab` repository only after checking that its instructions match that deployment. A dedicated chapter for the fresh build is still pending. Database recovery is not a routine action after every reboot.
+For a deployed cloud, use the [Shutdown, reboot and recovery guide](docs/SHUTDOWN-AND-RECOVERY.md) after checking that its inventory, Kolla release, container engine and service placement match the current deployment. Database recovery is not a routine action after every reboot.
 
 ## Safety and verification
 
