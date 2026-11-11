@@ -26,7 +26,37 @@ Install the release-constrained OpenStack CLI on the management VM. Stop if inst
 
 ```bash
 python -m pip install python-openstackclient -c https://releases.openstack.org/constraints/upper/2026.2
+command -v openstack
+openstack --version
 ```
+
+**Pass when:** `openstack` resolves inside `$KOLLA_VENV/bin/openstack` and prints its version. This installs the client only; it does not authenticate or create cloud resources.
+
+### Horizon dashboard and administrator password
+
+Kolla deploys [Horizon](https://docs.openstack.org/kolla-ansible/2026.2/reference/shared-services/horizon-guide.html) as the OpenStack web dashboard. The 2026.2 Kolla documentation supports Horizon in a multinode deployment. After the deploy and validation gates pass, open the Horizon URL through the configured API VIP:
+
+```text
+http://192.168.0.150/
+```
+
+The page should redirect to the Horizon login screen. Use the Keystone administrator account:
+
+```text
+Username: admin
+```
+
+The Horizon administrator password is the generated `keystone_admin_password` value in the protected `$KOLLA_CONFIG_PATH/passwords.yml` file. Retrieve it only on the local management VM using an approved secure method. If no password manager is available, use the read-only editor view below, search for `keystone_admin_password`, enter the value directly into the browser, then exit without saving:
+
+```bash
+nano --view "$KOLLA_CONFIG_PATH/passwords.yml"
+```
+
+Never run `cat`, `grep`, `print`, or a script that displays the password; never place it in chat, Git, shell history, environment variables, screenshots or command output.
+
+Do **not** run `kolla-genpwd` after the cloud has been deployed just to recover a forgotten Horizon password. That can generate new service secrets and make the deployed cloud inconsistent. If the password must be changed rather than retrieved, stop and use the controlled Kolla password-rotation procedure: back up `passwords.yml`, change only the intended secret, set `update_keystone_service_user_passwords: true` for the controlled reconfigure, run the approved reconfigure, then return the setting to `false`. Password rotation is a live change and requires a separate backup, impact review and approval. See the [Kolla-Ansible 2026.2 password rotation guide](https://docs.openstack.org/kolla-ansible/2026.2/admin/password-rotation.html).
+
+**Pass when:** the Horizon login page responds through the VIP and the administrator can authenticate without exposing the password. A working login does not by itself prove that every OpenStack API, service or VM workflow is healthy.
 
 Choose the sudo mode verified in Step 8 in this same terminal. For verified passwordless sudo on every selected host:
 
