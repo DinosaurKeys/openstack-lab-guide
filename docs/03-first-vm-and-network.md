@@ -1,4 +1,6 @@
-# Steps 10–11: First VM and floating IP
+# Steps 10–11: First VM, private network and floating IP
+
+> **Chapter order:** Step 10 creates and verifies the first private test VM. Step 11 connects that VM to the provider LAN with a floating IP and tests connectivity. Horizon is an **optional GUI alternative** for viewing and operating the cloud; it is not a separate numbered step and is not required for the CLI workflow.
 
 > **Private working draft:** The addresses below describe this lab and must be sanitized before publication. Running these steps creates cloud resources; writing this guide did not change the cloud. Run OpenStack commands on the **management VM**, as your normal user, in one terminal. At the start of that terminal, run the Step 00 path contract and set the verified `OS_CLOUD` only after reading the generated cloud names without displaying credentials. Stop at each failed gate; never rerun a create command merely because it is slow. Record IDs and which objects you created in a private local record. Names are not necessarily unique: use IDs after checking them.
 
@@ -32,31 +34,9 @@ openstack --version
 
 **Pass when:** `openstack` resolves inside `$KOLLA_VENV/bin/openstack` and prints its version. This installs the client only; it does not authenticate or create cloud resources.
 
-### Horizon dashboard and administrator password
+### Fresh-install-only: generate the CLI cloud configuration
 
-Kolla deploys [Horizon](https://docs.openstack.org/kolla-ansible/2026.2/reference/shared-services/horizon-guide.html) as the OpenStack web dashboard. The 2026.2 Kolla documentation supports Horizon in a multinode deployment. After the deploy and validation gates pass, open the Horizon URL through the configured API VIP:
-
-```text
-http://192.168.0.150/
-```
-
-The page should redirect to the Horizon login screen. Use the Keystone administrator account:
-
-```text
-Username: admin
-```
-
-The Horizon administrator password is the generated `keystone_admin_password` value in the protected `$KOLLA_CONFIG_PATH/passwords.yml` file. Retrieve it only on the local management VM using an approved secure method. If no password manager is available, use the read-only editor view below, search for `keystone_admin_password`, enter the value directly into the browser, then exit without saving:
-
-```bash
-nano --view "$KOLLA_CONFIG_PATH/passwords.yml"
-```
-
-Never run `cat`, `grep`, `print`, or a script that displays the password; never place it in chat, Git, shell history, environment variables, screenshots or command output.
-
-Do **not** run `kolla-genpwd` after the cloud has been deployed just to recover a forgotten Horizon password. That can generate new service secrets and make the deployed cloud inconsistent. If the password must be changed rather than retrieved, stop and use the controlled Kolla password-rotation procedure: back up `passwords.yml`, change only the intended secret, set `update_keystone_service_user_passwords: true` for the controlled reconfigure, run the approved reconfigure, then return the setting to `false`. Password rotation is a live change and requires a separate backup, impact review and approval. See the [Kolla-Ansible 2026.2 password rotation guide](https://docs.openstack.org/kolla-ansible/2026.2/admin/password-rotation.html).
-
-**Pass when:** the Horizon login page responds through the VIP and the administrator can authenticate without exposing the password. A working login does not by itself prove that every OpenStack API, service or VM workflow is healthy.
+Skip this entire subsection when `$HOME/.config/openstack/clouds.yaml` already exists and has been privately verified. Do not rerun `post-deploy` or overwrite the existing client configuration just to use Horizon or open another terminal.
 
 Choose the sudo mode verified in Step 8 in this same terminal. For verified passwordless sudo on every selected host:
 
@@ -92,7 +72,7 @@ done
 Continue only after manually confirming that both directories are owned by your normal account, the OpenStack directory is private, and no stop message appeared. Check that the source is nonempty and the destination is absent, without printing the source:
 
 ```bash
-sudo test -s $KOLLA_CONFIG_PATH/clouds.yaml &&
+sudo test -s "$KOLLA_CONFIG_PATH/clouds.yaml" &&
 [ ! -e "$HOME/.config/openstack/clouds.yaml" ] &&
 [ ! -L "$HOME/.config/openstack/clouds.yaml" ] &&
 printf '%s\n' 'Source present; destination absent.'
@@ -101,7 +81,7 @@ printf '%s\n' 'Source present; destination absent.'
 Only after that check passes, create the destination with shell **no-clobber** enabled, owner set to your account and mode 600. If a file or symlink appears before creation, the redirection fails rather than overwriting it. This creates a file containing secrets. Never add it to Git:
 
 ```bash
-sudo bash -c 'umask 077; set -C; cat $KOLLA_CONFIG_PATH/clouds.yaml > "$1" && chown "$2:$3" "$1" && chmod 600 "$1"' \
+sudo env KOLLA_CONFIG_PATH="$KOLLA_CONFIG_PATH" bash -c 'umask 077; set -C; cat -- "$KOLLA_CONFIG_PATH/clouds.yaml" > "$1" && chown "$2:$3" "$1" && chmod 600 "$1"' \
   _ "$HOME/.config/openstack/clouds.yaml" "$(id -un)" "$(id -gn)"
 ```
 
@@ -111,26 +91,16 @@ If it fails, stop and inspect the destination ownership and file state without d
 stat -c '%n owner=%U mode=%a' "$HOME/.config/openstack/clouds.yaml"
 ```
 
-**Authentication check:** For this fresh build, use the environment created in Step 00 (`$KOLLA_VENV`) and the cloud entry generated by this same fresh configuration. Do not copy or reuse the historical `kolla-admin` entry from the old deployment.
+**Authentication check:** For this lab's current fresh build, use the environment created in Step 00 (`$KOLLA_VENV`) and the cloud entry generated by the same current configuration. The generated user-facing entry is `kolla-admin`. Do not copy or reuse an old `clouds.yaml`; if your fresh file has a different cloud name, stop and inspect the names privately instead of guessing.
 
 ```bash
 source "$KOLLA_VENV/bin/activate"
-```
-
-Then select the actual verified cloud name without displaying credentials. The generated name is release/configuration dependent:
-
-```bash
-grep -E '^  [A-Za-z0-9_.-]+:' "$KOLLA_CONFIG_PATH/clouds.yaml" | sed -E 's/^  ([^:]+):.*$/\1/'
-```
-
-Set the name returned by that command, not a historical example:
-
-```bash
-export OS_CLOUD='<verified-cloud-name>'
+export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
+export OS_CLOUD=kolla-admin
 openstack token issue -f value -c expires
 ```
 
-**Expected output:** an expiration time, not a token value. Stop if authentication fails; the configured cloud name may differ in another installation. Inspect the existing deployment and possible collisions:
+**Expected output:** an expiration time, not a token value. Stop if authentication fails; verify that the client file belongs to the current deployment before changing anything. Inspect the existing deployment and possible collisions:
 
 ```bash
 openstack service list
@@ -442,3 +412,31 @@ Rollback is optional, and it changes real cloud state. Before each command, insp
 4. For full exercise cleanup, delete a **newly created test VM only after explicit approval**, verifying its ID and that no data must be preserved. Wait until deletion completes and its port is gone before deleting any newly created security group, private subnet/network, image or flavor. Delete the new external subnet/network only after confirming no router, floating IP, port or other dependency remains. Use exact IDs with `openstack server delete`, `security group delete`, `subnet delete`, `network delete`, `image delete` and `flavor delete` in dependency order. Delete a newly created keypair only when no longer needed; preserve the local private key until the operator has decided it is no longer needed. Never delete the already deployed `lab-smoke` as a rollback of this exercise. Verify each target is gone with its corresponding `show` or list command.
 
 **Completion gate:** record the VM/port and FIP IDs, intended associations, and separate inbound SSH/ICMP, outbound IP and DNS results. Unperformed tests remain **NOT TESTED**; no network mutation or connectivity test has been performed merely by reading this guide.
+
+## Optional after Steps 10–11: Horizon dashboard
+
+Horizon is optional. It is a web GUI for the same OpenStack services used by the CLI. It is not required to create or verify the first VM and network, and it is not a separate deployment step. Complete the CLI authentication and Step 10–11 gates first. Use either the CLI or Horizon for an individual operation; do not create the same resource twice through both interfaces.
+
+After the deploy and validation gates pass, open the Horizon URL through the configured API VIP:
+
+```text
+http://192.168.0.150/
+```
+
+The page should redirect to the Horizon login screen. Use the Keystone administrator account:
+
+```text
+Username: admin
+```
+
+The Horizon administrator password is the generated `keystone_admin_password` value in the protected `$KOLLA_CONFIG_PATH/passwords.yml` file. Retrieve it only on the local management VM using an approved secure method. If no password manager is available, use the read-only editor view below, search for `keystone_admin_password`, enter the value directly into the browser, then exit without saving:
+
+```bash
+nano --view "$KOLLA_CONFIG_PATH/passwords.yml"
+```
+
+Never run `cat`, `grep`, `print`, or a script that displays the password; never place it in chat, Git, shell history, environment variables, screenshots or command output.
+
+Do **not** run `kolla-genpwd` after the cloud has been deployed just to recover a forgotten Horizon password. That can generate new service secrets and make the deployed cloud inconsistent. If the password must be changed rather than retrieved, stop and use the controlled Kolla password-rotation procedure: back up `passwords.yml`, change only the intended secret, set `update_keystone_service_user_passwords: true` for the controlled reconfigure, run the approved reconfigure, then return the setting to `false`. Password rotation is a live change and requires a separate backup, impact review and approval. See the [Kolla-Ansible 2026.2 password rotation guide](https://docs.openstack.org/kolla-ansible/2026.2/admin/password-rotation.html).
+
+**Pass when:** the Horizon login page responds through the VIP and the administrator can authenticate without exposing the password. A working login does not by itself prove that every OpenStack API, service or VM workflow is healthy.
