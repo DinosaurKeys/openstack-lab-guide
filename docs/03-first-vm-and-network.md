@@ -188,39 +188,46 @@ Inspect the exact port with `openstack port show "$VM_PORT"`, after setting `VM_
 
 ### Step 10C: Prepare the key, image and VM
 
-The guest key must exist **before** the first boot. Check both local key paths before generating anything; if either exists, stop and inspect rather than overwrite it:
+The guest key must exist **before** the first boot. The local key is reusable across a Step 10 rerun; do not delete or regenerate it just because the cloud keypair was removed. Stop only when one file is missing, either path is a symlink, or the fingerprint check fails:
 
 ```bash
-for key_file in "$HOME/.ssh/lab-smoke" "$HOME/.ssh/lab-smoke.pub"; do
-  if [ -e "$key_file" ] || [ -L "$key_file" ]; then
-    printf 'STOP: key path already exists or is a symlink: %s\n' "$key_file"
-    exit 1
-  fi
-done
+if [ -L "$HOME/.ssh/lab-smoke" ] || [ -L "$HOME/.ssh/lab-smoke.pub" ]; then
+  printf '%s\n' 'STOP: a Step 10 key path is a symlink.'
+  exit 1
+fi
+if [ -e "$HOME/.ssh/lab-smoke" ] && [ -e "$HOME/.ssh/lab-smoke.pub" ]; then
+  printf '%s\n' 'Existing local Step 10 keypair found; it will be verified and reused.'
+  stat -c '%n owner=%U mode=%a' "$HOME/.ssh/lab-smoke" "$HOME/.ssh/lab-smoke.pub"
+elif [ ! -e "$HOME/.ssh/lab-smoke" ] && [ ! -e "$HOME/.ssh/lab-smoke.pub" ]; then
+  ssh-keygen -t ed25519 -f "$HOME/.ssh/lab-smoke" -C lab-smoke
+else
+  printf '%s\n' 'STOP: only one local Step 10 key file exists; inspect before continuing.'
+  exit 1
+fi
 ```
 
-Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git:
-
-```bash
-ssh-keygen -t ed25519 -f "$HOME/.ssh/lab-smoke" -C lab-smoke
-```
-
-Only after key generation succeeds, verify both files, ownership, mode and fingerprint:
+Verify the local key before creating or reusing the cloud keypair:
 
 ```bash
 test -s "$HOME/.ssh/lab-smoke" && test -s "$HOME/.ssh/lab-smoke.pub"
 chmod 600 "$HOME/.ssh/lab-smoke"
-stat -c '%n owner=%U mode=%a' "$HOME/.ssh/lab-smoke" "$HOME/.ssh/lab-smoke.pub"
-ssh-keygen -lf "$HOME/.ssh/lab-smoke.pub"
+LOCAL_KEYPAIR_FP="$(ssh-keygen -E md5 -lf "$HOME/.ssh/lab-smoke.pub" | awk '{print $2}' | sed 's/^MD5://')"
+printf 'Local key fingerprint: %s\n' "$LOCAL_KEYPAIR_FP"
 ```
 
-If the cloud keypair already exists, stop and compare its fingerprint with the local public key. Only create it when the name is absent:
+Use the same cloud keypair only when its fingerprint matches the local public key. Create it only when the name is absent:
 
 ```bash
 if openstack keypair show lab-smoke-key >/dev/null 2>&1; then
-  printf '%s\n' 'STOP: lab-smoke-key already exists; inspect its fingerprint before reuse.'
+  CLOUD_KEYPAIR_FP="$(openstack keypair show lab-smoke-key -f value -c fingerprint)"
+  if [ "$CLOUD_KEYPAIR_FP" != "$LOCAL_KEYPAIR_FP" ]; then
+    printf 'STOP: cloud/local key fingerprint mismatch: %s != %s\n' "$CLOUD_KEYPAIR_FP" "$LOCAL_KEYPAIR_FP"
+    exit 1
+  fi
+  printf '%s\n' 'Cloud keypair exists and matches the local public key; reusing it.'
 else
-  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key
+  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null
+  printf '%s\n' 'Created cloud keypair lab-smoke-key.'
 fi
 ```
 
@@ -230,7 +237,7 @@ Verify the cloud keypair before creating the VM:
 openstack keypair show lab-smoke-key -c name -c fingerprint
 ```
 
-Reuse the keypair only when the displayed fingerprint matches the local public-key fingerprint. Do not regenerate a lost private key and assume it matches.
+Do not regenerate a lost private key and assume it matches.
 
 Download CirrOS from its [official 0.6.3 release directory](https://download.cirros-cloud.net/0.6.3/); this x86-64 image is a disposable test image, **not production**. CirrOS has a publicly known default login and passwordless sudo: limit network exposure and remove the test VM when no longer needed. Its [publisher](https://github.com/cirros-dev/cirros) documents the guest user `cirros`.
 
@@ -296,6 +303,24 @@ grep -E '  cirros-0\.6\.3-x86_64-disk\.img$' cirros-0.6.3-SHA256SUMS | sha256sum
 Only use this fresh-resource path after Step 10B inspection confirms that the intended names do not already exist and that `10.254.211.0/24` does not overlap a connected VPN, routed network or existing subnet. If an object already exists, inspect and reuse it by ID only when it is compatible; do not run its create command again.
 
 Run **one resource command at a time**. After each successful create, record the returned ID, set the variable, and verify the object before continuing. Do not paste the entire sequence into one shell block.
+
+Before the first create, run this collision check. Every listed object must be absent; if any match exists, stop and inspect it by ID instead of running the corresponding create command:
+
+```bash
+set -e
+[ -z "$(openstack network list --name lab-private -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private already exists.'; exit 1; }
+[ -z "$(openstack subnet list --name lab-private-subnet -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; exit 1; }
+if openstack flavor list -f json | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); raise SystemExit(0 if any((r.get("Name") or r.get("name"))==n for r in rows) else 1)'; then
+  printf '%s\n' 'STOP: lab.tiny already exists.'
+  exit 1
+fi
+[ -z "$(openstack image list --name lab-test-image -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; exit 1; }
+[ -z "$(openstack security group list -f json | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')" ] || { printf '%s\n' 'STOP: lab-vm-access already exists.'; exit 1; }
+[ -z "$(openstack server list --all-projects --name lab-smoke -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; exit 1; }
+printf '%s\n' 'Step 10 resource names are absent; creation path is clear.'
+```
+
+**Pass when:** the final line reports that all Step 10 resource names are absent. **Stop if:** any resource already exists or any inspection command fails.
 
 **A — Create and verify the private network:**
 
@@ -376,23 +401,54 @@ TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
 printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
 ```
 
-Before each rule create, review the current rule list. If the exact direction, protocol, port and CIDR already exist, do not create a duplicate; record and verify the existing rule ID. Create only a missing rule. Add each approved ingress rule separately, capture its returned ID and verify it:
+Before creating ingress rules, inspect the current list and reuse an exact existing rule. This avoids duplicate-rule errors when a partially completed run is resumed:
 
 ```bash
-SSH_RULE_ID="$(openstack security group rule create \
-  --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
-  --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-  -f value -c id)" || exit 1
-printf 'SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+rule_id() {
+  local protocol="$1" port="$2"
+  openstack security group rule list "$ACCESS_GROUP_ID" -f json |
+    python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+protocol, port, cidr = sys.argv[1:]
+for row in rows:
+    if (row.get("Direction") or row.get("direction")) != "ingress":
+        continue
+    if (row.get("IP Protocol") or row.get("ip_protocol")) != protocol:
+        continue
+    if (row.get("IP Range") or row.get("ip_range")) != cidr:
+        continue
+    if port:
+        value = row.get("Port Range") or row.get("port_range") or ""
+        if value not in (port, f"{port}:{port}"):
+            continue
+    print(row.get("ID") or row.get("id"))
+    break
+' "$protocol" "$port" "$TRUSTED_CIDR"
+}
+
+SSH_RULE_ID="$(rule_id tcp 22)"
+if [ -n "$SSH_RULE_ID" ]; then
+  printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+else
+  SSH_RULE_ID="$(openstack security group rule create \
+    --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
+    --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+    -f value -c id)" || exit 1
+  printf 'Created SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+fi
 openstack security group rule show "$SSH_RULE_ID"
-```
 
-```bash
-ICMP_RULE_ID="$(openstack security group rule create \
-  --ingress --ethertype IPv4 --protocol icmp \
-  --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-  -f value -c id)" || exit 1
-printf 'ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+ICMP_RULE_ID="$(rule_id icmp '')"
+if [ -n "$ICMP_RULE_ID" ]; then
+  printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+else
+  ICMP_RULE_ID="$(openstack security group rule create \
+    --ingress --ethertype IPv4 --protocol icmp \
+    --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+    -f value -c id)" || exit 1
+  printf 'Created ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+fi
 openstack security group rule show "$ICMP_RULE_ID"
 ```
 
@@ -470,60 +526,89 @@ printf 'VM_PORT=%s\nFIXED_IP=%s\nPRIVATE_SUBNET_ID=%s\n' "$VM_PORT" "$FIXED_IP" 
 openstack port show "$VM_PORT"
 ```
 
-Choose the resource path before running any create command:
+Choose the resource path before running any create command. Each resource has a separate existing-resource branch and new-resource branch. Never run a create command in the existing-resource branch.
 
-- **Existing-resource path:** if `lab-external`, `lab-external-subnet` or `lab-router` exists, inspect it by ID and verify compatibility. Set the corresponding variable from the verified object and skip its create command.
-- **New dedicated path:** only when the named object is absent, create it, capture its ID, verify it, and stop before moving to the next resource.
-
-The commands below deliberately use the object name only to capture the ID immediately after a successful create. Do not continue after a failed command, and do not use a name when more than one object matches.
-
-**A — Create or identify the external network:**
-
-If `lab-external` is absent and the physical mapping/address plan has passed inspection, create it:
+**A — Identify or create the external network:**
 
 ```bash
-EXT_NET_ID="$(openstack network create \
-  --external \
-  --provider-network-type flat \
-  --provider-physical-network physnet1 \
-  lab-external \
-  -f value -c id)" || exit 1
+mapfile -t EXT_NET_IDS < <(openstack network list --name lab-external -f value -c ID)
+if [ "${#EXT_NET_IDS[@]}" -gt 1 ]; then
+  printf '%s\n' 'STOP: more than one lab-external network matched.'
+  exit 1
+elif [ "${#EXT_NET_IDS[@]}" -eq 1 ]; then
+  EXT_NET_ID="${EXT_NET_IDS[0]}"
+  NETWORK_JSON="$(openstack network show "$EXT_NET_ID" -f json)" || exit 1
+  printf '%s\n' "$NETWORK_JSON" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+expected = {"status": "ACTIVE", "is_router_external": True, "provider_network_type": "flat", "provider_physical_network": "physnet1"}
+errors = [f"{k}={d.get(k)!r}, expected {v!r}" for k, v in expected.items() if d.get(k) != v]
+if errors:
+    print("STOP: existing external network is incompatible: " + "; ".join(errors))
+    raise SystemExit(1)
+print("Existing compatible external network verified.")
+'
+else
+  EXT_NET_ID="$(openstack network create \
+    --external \
+    --provider-network-type flat \
+    --provider-physical-network physnet1 \
+    lab-external \
+    -f value -c id)" || exit 1
+  printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
+  openstack network show "$EXT_NET_ID"
+fi
 printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
-openstack network show "$EXT_NET_ID"
 ```
 
-If the network already existed, run the same capture and verification only after confirming it is the intended external `physnet1` network. **Pass when:** exactly one compatible external network is identified. **Stop if:** the network is missing, duplicated, or has the wrong physical mapping.
+**Pass when:** exactly one `lab-external` network is present and its status is `ACTIVE`, external flag is true, provider type is `flat`, and provider physical network is `physnet1`. **Stop if:** it is missing, duplicated, or incompatible. Do not repair an incompatible existing network inside this learning step; stop and review it separately.
 
-**B — Create or identify the external subnet:**
-
-Only if `lab-external-subnet` is absent and `EXT_NET_ID` has passed verification, create it:
+**B — Identify or create the external subnet:**
 
 ```bash
-EXT_SUBNET_ID="$(openstack subnet create \
-  --network "$EXT_NET_ID" \
-  --subnet-range 192.168.0.0/24 \
-  --gateway 192.168.0.1 \
-  --allocation-pool start=192.168.0.151,end=192.168.0.199 \
-  --no-dhcp \
-  lab-external-subnet \
-  -f value -c id)" || exit 1
+mapfile -t EXT_SUBNET_IDS < <(openstack subnet list --name lab-external-subnet -f value -c ID)
+if [ "${#EXT_SUBNET_IDS[@]}" -gt 1 ]; then
+  printf '%s\n' 'STOP: more than one lab-external-subnet matched.'
+  exit 1
+elif [ "${#EXT_SUBNET_IDS[@]}" -eq 1 ]; then
+  EXT_SUBNET_ID="${EXT_SUBNET_IDS[0]}"
+  openstack subnet show "$EXT_SUBNET_ID" -c id -c name -c network_id -c cidr -c gateway_ip -c enable_dhcp -c allocation_pools
+else
+  EXT_SUBNET_ID="$(openstack subnet create \
+    --network "$EXT_NET_ID" \
+    --subnet-range 192.168.0.0/24 \
+    --gateway 192.168.0.1 \
+    --allocation-pool start=192.168.0.151,end=192.168.0.199 \
+    --no-dhcp \
+    lab-external-subnet \
+    -f value -c id)" || exit 1
+  printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
+  openstack subnet show "$EXT_SUBNET_ID" -c id -c name -c network_id -c cidr -c gateway_ip -c enable_dhcp -c allocation_pools
+fi
 printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
-openstack subnet show "$EXT_SUBNET_ID"
 ```
 
-**Pass when:** the subnet uses `192.168.0.0/24`, gateway `192.168.0.1`, the intended allocation pool, no DHCP, and `network_id` equals `EXT_NET_ID`. **Stop if:** the CIDR, pool, gateway or network ID differs.
+**Pass when:** exactly one subnet is present, attached to `EXT_NET_ID`, uses `192.168.0.0/24`, gateway `192.168.0.1`, allocation pool `192.168.0.151–192.168.0.199`, and DHCP is disabled. **Stop if:** any value differs. Do not modify an incompatible existing subnet here.
 
-**C — Create or identify the router:**
-
-Only after the external subnet has passed verification, and only if `lab-router` is absent, create it:
+**C — Identify or create the router:**
 
 ```bash
-ROUTER_ID="$(openstack router create lab-router -f value -c id)" || exit 1
+mapfile -t ROUTER_IDS < <(openstack router list --name lab-router -f value -c ID)
+if [ "${#ROUTER_IDS[@]}" -gt 1 ]; then
+  printf '%s\n' 'STOP: more than one lab-router matched.'
+  exit 1
+elif [ "${#ROUTER_IDS[@]}" -eq 1 ]; then
+  ROUTER_ID="${ROUTER_IDS[0]}"
+  openstack router show "$ROUTER_ID"
+else
+  ROUTER_ID="$(openstack router create lab-router -f value -c id)" || exit 1
+  printf 'ROUTER_ID=%s\n' "$ROUTER_ID"
+  openstack router show "$ROUTER_ID"
+fi
 printf 'ROUTER_ID=%s\n' "$ROUTER_ID"
-openstack router show "$ROUTER_ID"
 ```
 
-If the router already existed, identify it and inspect its gateway, interfaces, owner and dependencies. Do not change a shared router without separate impact approval.
+**Pass when:** exactly one router is identified and its dependencies are understood. **Stop if:** the router is shared, has an unexpected gateway or interface, or its ownership is unclear. Do not mutate an existing/shared router in this learning step.
 
 **D — Set the gateway on the newly created dedicated router:**
 
