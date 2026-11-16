@@ -691,33 +691,60 @@ TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
 printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
 ```
 
-If the verified group does not already contain the ICMP rule, add it and inspect the returned rule:
+Inspect the verified group and reuse an exact existing rule. This block adds only missing rules:
 
 ```bash
-ICMP_RULE_ID="$(openstack security group rule create \
-  --ingress \
-  --ethertype IPv4 \
-  --protocol icmp \
-  --remote-ip "$TRUSTED_CIDR" \
-  "$ACCESS_GROUP_ID" \
-  -f value -c id)" || exit 1
-printf 'ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+rule_id() {
+  local protocol="$1" port="$2"
+  openstack security group rule list "$ACCESS_GROUP_ID" -f json |
+    python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+protocol, port, cidr = sys.argv[1:]
+for row in rows:
+    if (row.get("Direction") or row.get("direction")) != "ingress":
+        continue
+    if (row.get("IP Protocol") or row.get("ip_protocol")) != protocol:
+        continue
+    if (row.get("IP Range") or row.get("ip_range")) != cidr:
+        continue
+    if port:
+        value = row.get("Port Range") or row.get("port_range") or ""
+        if value not in (port, f"{port}:{port}"):
+            continue
+    print(row.get("ID") or row.get("id"))
+    break
+' "$protocol" "$port" "$TRUSTED_CIDR"
+}
+
+ICMP_RULE_ID="$(rule_id icmp '')"
+if [ -n "$ICMP_RULE_ID" ]; then
+  printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+else
+  ICMP_RULE_ID="$(openstack security group rule create \
+    --ingress --ethertype IPv4 --protocol icmp \
+    --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+    -f value -c id)" || exit 1
+  printf 'Created ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+fi
 openstack security group rule show "$ICMP_RULE_ID"
-```
 
-Only after guest authentication is securely configured and SSH access is approved, add the SSH rule if it is absent:
-
-```bash
-SSH_RULE_ID="$(openstack security group rule create \
-  --ingress \
-  --ethertype IPv4 \
-  --protocol tcp \
-  --dst-port 22 \
-  --remote-ip "$TRUSTED_CIDR" \
-  "$ACCESS_GROUP_ID" \
-  -f value -c id)" || exit 1
-printf 'SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
-openstack security group rule show "$SSH_RULE_ID"
+read -r -p 'Create or reuse the approved SSH rule now? Type YES to continue: ' SSH_APPROVAL
+if [ "$SSH_APPROVAL" = 'YES' ]; then
+  SSH_RULE_ID="$(rule_id tcp 22)"
+  if [ -n "$SSH_RULE_ID" ]; then
+    printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+  else
+    SSH_RULE_ID="$(openstack security group rule create \
+      --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
+      --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+      -f value -c id)" || exit 1
+    printf 'Created SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+  fi
+  openstack security group rule show "$SSH_RULE_ID"
+else
+  printf '%s\n' 'SSH rule not changed.'
+fi
 ```
 
 Verify the complete group and port state:
