@@ -226,7 +226,7 @@ if openstack keypair show lab-smoke-key >/dev/null 2>&1; then
   fi
   printf '%s\n' 'Cloud keypair exists and matches the local public key; reusing it.'
 else
-  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null
+  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null || exit 1
   printf '%s\n' 'Created cloud keypair lab-smoke-key.'
 fi
 ```
@@ -269,6 +269,7 @@ stat -c '%n owner=%U mode=%a size=%s' cirros-0.6.3-x86_64-disk.img
 If the checksum file is absent, download it to a temporary file and move it into place only after the transfer succeeds:
 
 ```bash
+cd "$HOME/images"
 if [ -L cirros-0.6.3-SHA256SUMS ] || [ -d cirros-0.6.3-SHA256SUMS ]; then
   printf '%s\n' 'STOP: checksum path is a symlink or directory.'
   exit 1
@@ -310,12 +311,15 @@ Before the first create, run this collision check. Every listed object must be a
 set -e
 [ -z "$(openstack network list --name lab-private -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private already exists.'; exit 1; }
 [ -z "$(openstack subnet list --name lab-private-subnet -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; exit 1; }
-if openstack flavor list -f json | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); raise SystemExit(0 if any((r.get("Name") or r.get("name"))==n for r in rows) else 1)'; then
+FLAVORS_JSON="$(openstack flavor list -f json)" || exit 1
+if printf '%s\n' "$FLAVORS_JSON" | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); raise SystemExit(0 if any((r.get("Name") or r.get("name"))==n for r in rows) else 1)'; then
   printf '%s\n' 'STOP: lab.tiny already exists.'
   exit 1
 fi
 [ -z "$(openstack image list --name lab-test-image -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; exit 1; }
-[ -z "$(openstack security group list -f json | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')" ] || { printf '%s\n' 'STOP: lab-vm-access already exists.'; exit 1; }
+SECURITY_GROUPS_JSON="$(openstack security group list -f json)" || exit 1
+MATCHING_SECURITY_GROUPS="$(printf '%s\n' "$SECURITY_GROUPS_JSON" | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')"
+[ -z "$MATCHING_SECURITY_GROUPS" ] || { printf '%s\n' 'STOP: lab-vm-access already exists.'; exit 1; }
 [ -z "$(openstack server list --all-projects --name lab-smoke -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; exit 1; }
 printf '%s\n' 'Step 10 resource names are absent; creation path is clear.'
 ```
