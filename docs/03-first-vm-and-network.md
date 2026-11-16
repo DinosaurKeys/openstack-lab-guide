@@ -90,19 +90,24 @@ openstack --version
 
 Run this subsection only when the destination client file is genuinely absent. It is not a normal Step 10 command and it is not required for an already configured cloud.
 
-Choose the sudo mode verified in Step 8 in this same terminal. For verified passwordless sudo on every selected host:
+Run this one self-contained block only when the destination client file is genuinely absent. It does not apply to an already configured client:
 
 ```bash
-export ANSIBLE_BECOME_ASK_PASS=false
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
+source "$KOLLA_VENV/bin/activate"
+command -v kolla-ansible >/dev/null || { printf '%s\n' 'STOP: kolla-ansible is not in the fresh environment.'; exit 1; }
+read -r -p 'Is passwordless sudo verified on all selected hosts? Type YES or NO: ' SUDO_MODE
+case "$SUDO_MODE" in
+  YES) export ANSIBLE_BECOME_ASK_PASS=false ;;
+  NO) export ANSIBLE_BECOME_ASK_PASS=true ;;
+  *) printf '%s\n' 'STOP: answer YES or NO.'; exit 1 ;;
+esac
+kolla-ansible post-deploy -i "$KOLLA_INVENTORY" --configdir "$KOLLA_CONFIG_PATH"
 ```
 
-For the verified interactive alternative, use `export ANSIBLE_BECOME_ASK_PASS=true` and enter the password only at the local prompt. Run post-deploy once to generate the client configuration:
-
-```bash
-kolla-ansible post-deploy -i $KOLLA_CONFIG_PATH/multinode
-```
-
-Stop if post-deploy fails or its recap reports failed or unreachable hosts. The source and destination below contain credentials. Do not display them. On this fresh-install path, inspect both directory paths and create them **only when absent**. Stop if either path is a symlink, is not a directory, has an unexpected owner or permissions, or if any command fails:
+Enter any sudo password only at the local prompt when the interactive mode is selected. Stop if post-deploy fails or its recap reports failed or unreachable hosts. The source and destination below contain credentials. Do not display them. On this fresh-install path, inspect both directory paths and create them **only when absent**. Stop if either path is a symlink, is not a directory, has an unexpected owner or permissions, or if any command fails:
 
 ```bash
 for d in "$HOME/.config" "$HOME/.config/openstack"; do
@@ -174,17 +179,21 @@ openstack floating ip list
 
 **Expected output:** the intended Keystone, Nova, Neutron, Glance and Placement services and enabled endpoints; each expected `nova-compute`, `nova-scheduler` and `nova-conductor` row is `up` and `enabled` on its intended node, as are the expected network agents. Missing or down entries are a stop condition, not a cue to repeat deployment. The endpoint list shows registration; it does not show whether every endpoint was individually tested. Check service health and capacity, and inspect every matching name and its project, ID, settings and dependencies before reuse. Stop on ambiguous names, conflicting configuration or inaccessible project resources. Do not create another resource with the same name. The commands below are the **fresh path**; where a compatible object exists, explicitly inspect it, use its unique ID and skip its create command. Do not modify shared resources without a separate impact review. Verify `10.254.211.0/24` does not overlap any LAN, VPN, routed network or existing subnet before creating it.
 
-**Existing deployment resume — stop and inspect, do not recreate:** The separate lab already had `lab-smoke` ACTIVE at `10.254.211.204`, with no external router/FIP and no guest key. This is historical context, not a live check. Recheck the VM, its project, port, security groups, IP and router associations now. Preserve it and its disk. Do not run the fresh VM, key injection, or network creation instructions against it automatically. Its original boot did not inject a key; adding a keypair in Nova later will not install a key in that guest. Use an authorized guest console and separately approved guest access provisioning, or get explicit approval for a **new, differently named** VM. A console URL is sensitive; keep it private:
+**Existing deployment resume:** Check whether `lab-smoke` currently exists. A missing `lab-smoke` is the expected clean-build state; an existing match is a stop condition for the fresh path.
 
 ```bash
-openstack server show lab-smoke -c id -c status -c addresses -c key_name
-openstack port list --server lab-smoke --long
-openstack console url show lab-smoke
+VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || exit 1
+if [ -n "$VM_MATCHES" ]; then
+  printf '%s\n' 'STOP: lab-smoke already exists; inspect it before choosing the existing-VM or new-VM path.'
+  printf '%s\n' "$VM_MATCHES"
+  exit 1
+fi
+printf '%s\n' 'No lab-smoke VM exists; the fresh Step 10 path may continue.'
 ```
 
-Inspect the exact port with `openstack port show "$VM_PORT"`, after setting `VM_PORT` from the verified server port list. Inspect its security groups and existing rules. If this preserved VM is separately approved for the networking exercise, record its server ID and set `VM_ID` to that ID in the same terminal before continuing to Step 11; provision guest access only through a separately approved method. The remaining instructions are not permission to change this existing cloud. `ACTIVE` and the private address alone do not establish external reachability.
+**Pass when:** the list command succeeds and returns no server ID. **Stop if:** the command fails, more than one match is returned, or any `lab-smoke` VM exists. Do not delete an existing VM as part of the normal guide.
 
-**STOP — existing VM path ends here.** Do not continue into Step 10C unless Joe has separately approved creation of a new, differently named VM and the fresh-resource prerequisites are being followed.
+The historical VM observation at `10.254.211.204` is retained only as documentation history; it is not current state and must not block a clean rerun.
 
 ### Step 10C: Prepare the key, image and VM
 
@@ -218,16 +227,19 @@ printf 'Local key fingerprint: %s\n' "$LOCAL_KEYPAIR_FP"
 Use the same cloud keypair only when its fingerprint matches the local public key. Create it only when the name is absent:
 
 ```bash
-if openstack keypair show lab-smoke-key >/dev/null 2>&1; then
-  CLOUD_KEYPAIR_FP="$(openstack keypair show lab-smoke-key -f value -c fingerprint)"
+if KEYPAIR_LOOKUP_OUTPUT="$(openstack keypair show lab-smoke-key 2>&1)"; then
+  CLOUD_KEYPAIR_FP="$(openstack keypair show lab-smoke-key -f value -c fingerprint)" || exit 1
   if [ "$CLOUD_KEYPAIR_FP" != "$LOCAL_KEYPAIR_FP" ]; then
     printf 'STOP: cloud/local key fingerprint mismatch: %s != %s\n' "$CLOUD_KEYPAIR_FP" "$LOCAL_KEYPAIR_FP"
     exit 1
   fi
   printf '%s\n' 'Cloud keypair exists and matches the local public key; reusing it.'
-else
+elif printf '%s' "$KEYPAIR_LOOKUP_OUTPUT" | grep -Eqi 'not found|no keypair|could not be found'; then
   openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null || exit 1
   printf '%s\n' 'Created cloud keypair lab-smoke-key.'
+else
+  printf '%s\n' 'STOP: keypair lookup failed for a reason other than confirmed not-found.'
+  exit 1
 fi
 ```
 
@@ -305,26 +317,34 @@ Only use this fresh-resource path after Step 10B inspection confirms that the in
 
 Run **one resource command at a time**. After each successful create, record the returned ID, set the variable, and verify the object before continuing. Do not paste the entire sequence into one shell block.
 
-Before the first create, run this collision check. Every listed object must be absent; if any match exists, stop and inspect it by ID instead of running the corresponding create command:
+Before the first create, run this collision check. The network, subnet, flavor, image and VM names must be absent. A pre-existing `lab-vm-access` group is handled separately in sub-step E and must be compatible before reuse:
 
 ```bash
 set -e
-[ -z "$(openstack network list --name lab-private -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private already exists.'; exit 1; }
-[ -z "$(openstack subnet list --name lab-private-subnet -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; exit 1; }
+NETWORK_MATCHES="$(openstack network list --name lab-private -f value -c ID)" || exit 1
+[ -z "$NETWORK_MATCHES" ] || { printf '%s\n' 'STOP: lab-private already exists.'; exit 1; }
+SUBNET_MATCHES="$(openstack subnet list --name lab-private-subnet -f value -c ID)" || exit 1
+[ -z "$SUBNET_MATCHES" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; exit 1; }
 FLAVORS_JSON="$(openstack flavor list -f json)" || exit 1
 if printf '%s\n' "$FLAVORS_JSON" | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); raise SystemExit(0 if any((r.get("Name") or r.get("name"))==n for r in rows) else 1)'; then
   printf '%s\n' 'STOP: lab.tiny already exists.'
   exit 1
 fi
-[ -z "$(openstack image list --name lab-test-image -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; exit 1; }
+IMAGE_MATCHES="$(openstack image list --name lab-test-image -f value -c ID)" || exit 1
+[ -z "$IMAGE_MATCHES" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; exit 1; }
 SECURITY_GROUPS_JSON="$(openstack security group list -f json)" || exit 1
 MATCHING_SECURITY_GROUPS="$(printf '%s\n' "$SECURITY_GROUPS_JSON" | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')"
-[ -z "$MATCHING_SECURITY_GROUPS" ] || { printf '%s\n' 'STOP: lab-vm-access already exists.'; exit 1; }
-[ -z "$(openstack server list --all-projects --name lab-smoke -f value -c ID)" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; exit 1; }
-printf '%s\n' 'Step 10 resource names are absent; creation path is clear.'
+if [ -n "$MATCHING_SECURITY_GROUPS" ]; then
+  printf 'NOTE: lab-vm-access exists and will be inspected for compatible reuse: %s\n' "$MATCHING_SECURITY_GROUPS"
+else
+  printf '%s\n' 'No existing lab-vm-access group; Step 10E will create it.'
+fi
+VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || exit 1
+[ -z "$VM_MATCHES" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; exit 1; }
+printf '%s\n' 'Step 10 resource creation path is clear; security-group reuse will be checked separately.'
 ```
 
-**Pass when:** the final line reports that all Step 10 resource names are absent. **Stop if:** any resource already exists or any inspection command fails.
+**Pass when:** all inspection commands succeed, the network/subnet/flavor/image/VM names are absent, and any existing security group is explicitly identified for compatibility review. **Stop if:** any command fails or any non-security-group target already exists.
 
 **A — Create and verify the private network:**
 
@@ -379,7 +399,11 @@ openstack image show "$IMAGE_ID" -c id -c name -c status -c visibility
 A security group may already exist from an earlier attempt. Check before creating it and require exactly zero or one match:
 
 ```bash
-mapfile -t GROUP_IDS < <(openstack security group list --name lab-vm-access -f value -c ID)
+GROUP_IDS_OUTPUT="$(openstack security group list --name lab-vm-access -f value -c ID)" || exit 1
+GROUP_IDS=()
+if [ -n "$GROUP_IDS_OUTPUT" ]; then
+  mapfile -t GROUP_IDS <<< "$GROUP_IDS_OUTPUT"
+fi
 if [ "${#GROUP_IDS[@]}" -gt 1 ]; then
   printf 'STOP: more than one lab-vm-access group matched.\n'
   exit 1
@@ -397,8 +421,8 @@ Select the actual IPv4 address of the client that will test the VM. Account for 
 ```bash
 ip -4 route get 192.168.0.150
 read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
-if [[ ! "$TRUSTED_CLIENT_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-  printf '%s\n' 'STOP: enter a real IPv4 address, not a placeholder.'
+if ! python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$TRUSTED_CLIENT_IP"; then
+  printf '%s\n' 'STOP: enter a valid IPv4 address with octets from 0 to 255.'
   exit 1
 fi
 TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
@@ -409,8 +433,9 @@ Before creating ingress rules, inspect the current list and reuse an exact exist
 
 ```bash
 rule_id() {
-  local protocol="$1" port="$2"
-  openstack security group rule list "$ACCESS_GROUP_ID" -f json |
+  local protocol="$1" port="$2" rules_json
+  rules_json="$(openstack security group rule list "$ACCESS_GROUP_ID" -f json)" || return 1
+  printf '%s\n' "$rules_json" |
     python3 -c '
 import json, sys
 rows = json.load(sys.stdin)
@@ -431,7 +456,7 @@ for row in rows:
 ' "$protocol" "$port" "$TRUSTED_CIDR"
 }
 
-SSH_RULE_ID="$(rule_id tcp 22)"
+SSH_RULE_ID="$(rule_id tcp 22)" || exit 1
 if [ -n "$SSH_RULE_ID" ]; then
   printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
 else
@@ -443,7 +468,7 @@ else
 fi
 openstack security group rule show "$SSH_RULE_ID"
 
-ICMP_RULE_ID="$(rule_id icmp '')"
+ICMP_RULE_ID="$(rule_id icmp '')" || exit 1
 if [ -n "$ICMP_RULE_ID" ]; then
   printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 else
@@ -477,25 +502,20 @@ VM_NAME='lab-smoke'
 Recheck `openstack server list --all-projects` for the chosen name before boot. Use the verified IDs recorded in Step 10D rather than names. The fresh create explicitly supplies only the dedicated security group and keypair:
 
 ```bash
-openstack server create "$VM_NAME" \
+VM_ID="$(openstack server create "$VM_NAME" \
   --flavor "$FLAVOR_ID" \
   --image "$IMAGE_ID" \
   --network "$PRIVATE_NET_ID" \
   --security-group "$ACCESS_GROUP_ID" \
   --key-name lab-smoke-key \
-  --wait
-```
-
-**Pass when:** the command returns a server ID and does not report an error. **Stop if:** the name is already present, any referenced ID is missing/ambiguous, or the server enters `ERROR`.
-
-After creation succeeds, capture the unique server ID from the uniquely named server and verify it:
-
-```bash
-VM_ID="$(openstack server show "$VM_NAME" -f value -c id)"
+  --wait \
+  -f value -c id)" || exit 1
 printf 'VM_ID=%s\n' "$VM_ID"
 openstack server show "$VM_ID" -c id -c status -c addresses -c key_name
 openstack port list --server "$VM_ID" --long
 ```
+
+**Pass when:** the create command returns a server ID and the ID lookup succeeds. **Stop if:** the command fails, the server enters `ERROR`, or the server ID is missing. If the command result is uncertain, inspect `openstack server list --all-projects --name "$VM_NAME"` before retrying; do not create another VM by name.
 
 **Expected output:** `ACTIVE`, a private fixed IP, the intended key name, and a VM port on `lab-private`. Record the server ID, port ID and fixed IPv4. Inspect that port and its actual groups. If still building, inspect the same VM later; if `ERROR`, stop and diagnose safely without creating another. The VM is not yet externally reachable. Continue only after the VM, image and port gates pass.
 
@@ -687,8 +707,8 @@ Select the actual IPv4 address of the client that will test the floating IP, acc
 ```bash
 ip -4 route get 192.168.0.150
 read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
-if [[ ! "$TRUSTED_CLIENT_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-  printf '%s\n' 'STOP: enter a real IPv4 address, not a placeholder.'
+if ! python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$TRUSTED_CLIENT_IP"; then
+  printf '%s\n' 'STOP: enter a valid IPv4 address with octets from 0 to 255.'
   exit 1
 fi
 TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
@@ -699,8 +719,9 @@ Inspect the verified group and reuse an exact existing rule. This block adds onl
 
 ```bash
 rule_id() {
-  local protocol="$1" port="$2"
-  openstack security group rule list "$ACCESS_GROUP_ID" -f json |
+  local protocol="$1" port="$2" rules_json
+  rules_json="$(openstack security group rule list "$ACCESS_GROUP_ID" -f json)" || return 1
+  printf '%s\n' "$rules_json" |
     python3 -c '
 import json, sys
 rows = json.load(sys.stdin)
@@ -721,7 +742,7 @@ for row in rows:
 ' "$protocol" "$port" "$TRUSTED_CIDR"
 }
 
-ICMP_RULE_ID="$(rule_id icmp '')"
+ICMP_RULE_ID="$(rule_id icmp '')" || exit 1
 if [ -n "$ICMP_RULE_ID" ]; then
   printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 else
@@ -735,7 +756,7 @@ openstack security group rule show "$ICMP_RULE_ID"
 
 read -r -p 'Create or reuse the approved SSH rule now? Type YES to continue: ' SSH_APPROVAL
 if [ "$SSH_APPROVAL" = 'YES' ]; then
-  SSH_RULE_ID="$(rule_id tcp 22)"
+  SSH_RULE_ID="$(rule_id tcp 22)" || exit 1
   if [ -n "$SSH_RULE_ID" ]; then
     printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
   else
