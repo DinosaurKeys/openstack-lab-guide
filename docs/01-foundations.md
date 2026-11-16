@@ -8,7 +8,7 @@ Kolla-Ansible runs on a management VM and configures the physical nodes through 
 
 | System | Planned management address | Purpose |
 |---|---|---|
-| `manager` VM | Unique, reachable address | Deployment workstation; it may use a routed VMware NAT network if it can reach the nodes. |
+| `r2d2` management VM | Existing management workstation; it runs the deployment tools and may use a routed VMware NAT network if it can reach the nodes. |
 | `node1` | `192.168.0.200/24` | control, network, compute |
 | `node2` | `192.168.0.201/24` | control, network, compute |
 | `node3` | `192.168.0.202/24` | control, network, compute |
@@ -21,9 +21,11 @@ References: [Kolla 2026.2 quickstart](https://docs.openstack.org/kolla-ansible/2
 
 ## Step 1: Install and identify the systems
 
-**Goal:** Prepare four Ubuntu Server 24.04 systems without touching the existing SATA LVM pools. **Where:** Use the VM console for `manager` and a physical or out-of-band console for each node. **Prerequisites:** An independently verified backup appropriate to anything at risk, installation media, console access, a confirmed NIC and cable layout, and an address-conflict check. These actions are for replacement or fresh systems only.
+**Goal:** Prepare four Ubuntu Server 24.04 systems without touching the existing SATA LVM pools. **Where:** Use the R2D2 management VM console for `r2d2` and a physical or out-of-band console for each node. **Prerequisites:** An independently verified backup appropriate to anything at risk, installation media, console access, a confirmed NIC and cable layout, and an address-conflict check. These actions are for replacement or fresh systems only.
 
-**Already installed?** Joe's management VM already exists, and he reports that the three nodes have been reinstalled. Do not install Ubuntu again merely to follow this guide. Start with the identity, storage and network checks in item 3. Review any later updates or reboots separately before running them.
+**Already installed/reinstalled — current lab path:** Joe's management VM already exists, and he reports that the three nodes have been reinstalled. Do **not** install Ubuntu, run package upgrades, reboot, or change timezone merely to follow this guide. Run only item 3's read-only identity, storage and network checks on the correct consoles, then continue to Step 2. The fresh-install items below are mutually exclusive with this resume path.
+
+**Fresh-install path only:** Continue through items 1–5 only when the target system is genuinely being installed or replaced, with the console, disk, backup and change approval prerequisites satisfied.
 
 1. Install Ubuntu Server 24.04 LTS on the management VM. In the installer on each physical node, positively identify its **NVMe OS disk** by model, serial and capacity. Select only that disk. The existing SATA disks contain LVM pools. Preserve the disks, their partitions and their metadata. Never select them for formatting or automated storage layout. If the installer cannot clearly distinguish devices or proposes changing SATA disks, stop. Installing on the selected NVMe erases its selected contents.
 2. Set the hostnames to `manager`, `node1`, `node2` and `node3`. Use the same normal sudo-capable administrator username on each system. Do not enable root SSH login. Give the manager a unique address with working routed access to the nodes. It does not have to be on the same subnet. Nodes may initially use working temporary addresses until Step 4. Install only the base system. Kolla manages OpenStack dependencies later.
@@ -121,16 +123,22 @@ Protect the private key and its passphrase. For each node, independently check i
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-On the **manager**, substitute the actual username and current address, and repeat once for each node. Verify the fingerprint shown during connection against that node's console before accepting it. Enter initial account passwords only at the local SSH prompt, never in commands or chat:
+On the **manager**, enter the actual username and current address for one verified node at a time. Verify the fingerprint shown during connection against that node's console before accepting it. Enter initial account passwords only at the local SSH prompt, never in commands or chat:
 
 ```bash
-ssh-copy-id -i "$HOME/.ssh/openstack_lab_ed25519.pub" ADMIN_USER@NODE_CURRENT_IP
+read -r -p 'Node SSH username: ' NODE_USER
+read -r -p 'Node current IPv4 address: ' NODE_IP
+if [ -z "$NODE_USER" ] || [[ ! "$NODE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  printf '%s\n' 'STOP: enter a real username and IPv4 address.'
+  exit 1
+fi
+ssh-copy-id -i "$HOME/.ssh/openstack_lab_ed25519.pub" "$NODE_USER@$NODE_IP"
 ```
 
-Then test each node, replacing both placeholders each time:
+Then test the same verified node:
 
 ```bash
-ssh -i "$HOME/.ssh/openstack_lab_ed25519" ADMIN_USER@NODE_CURRENT_IP hostname
+ssh -i "$HOME/.ssh/openstack_lab_ed25519" "$NODE_USER@$NODE_IP" hostname
 ```
 
 It must return the expected node hostname without a node account-password prompt. A key passphrase prompt is different. For multiple connections, you can load the key into a local agent with `eval "$(ssh-agent -s)"` then `ssh-add "$HOME/.ssh/openstack_lab_ed25519"`. SSH access does not prove sudo/become access. Test that separately before privileged deployment. Do not disable host-key verification or share credentials.
@@ -146,8 +154,8 @@ This grants `joe` unrestricted root access without a password. It is convenient 
 First inspect the existing rule. Never overwrite it blindly:
 
 ```bash
-sudo stat /etc/sudoers.d/90-joe-friday 2>/dev/null || \\
-  printf '%s\\n' 'File does not exist; it may be created.'
+sudo stat /etc/sudoers.d/90-joe-friday 2>/dev/null || \
+  printf '%s\n' 'File does not exist; it may be created.'
 ```
 
 If the file exists, inspect and validate it:
@@ -161,9 +169,9 @@ If it does not exist, create it with root ownership and mode `0440`:
 
 ```bash
 if sudo test -e /etc/sudoers.d/90-joe-friday; then
-    printf '%s\\n' 'STOP: file already exists; inspect it first.'
+    printf '%s\n' 'STOP: file already exists; inspect it first.'
 else
-    printf '%s\\n' 'joe ALL=(ALL:ALL) NOPASSWD: ALL' |
+    printf '%s\n' 'joe ALL=(ALL:ALL) NOPASSWD: ALL' |
         sudo tee /etc/sudoers.d/90-joe-friday >/dev/null &&
     sudo chown root:root /etc/sudoers.d/90-joe-friday &&
     sudo chmod 0440 /etc/sudoers.d/90-joe-friday &&
@@ -330,7 +338,9 @@ This step uses three Ansible playbooks in sequence:
 2. **Deploy netplan** — backup existing configs, render node-specific netplan YAML from template, apply with `netplan try`, verify SSH.
 3. **Update /etc/hosts** — ensure consistent hostname resolution across all four systems.
 
-All playbooks live under `~/openstack-fresh/playbooks/` and use a **simple inventory** at `~/openstack-fresh/playbooks/inventory.yml` (created in Step 3). This inventory uses the known node IPs and SSH key from Step 2. The Kolla multinode inventory at `$KOLLA_INVENTORY` is not used until Step 5.
+All playbooks live under `~/openstack-fresh/playbooks/` and use a **simple inventory** at `~/openstack-fresh/playbooks/inventory.yml` (created as a separate local working-file step). The Kolla multinode inventory at `$KOLLA_INVENTORY` is not used until Step 5.
+
+**Repository boundary:** these Step 4 playbooks and their templates are local working files and are not currently tracked in this public repository. A clean GitHub checkout cannot execute Step 4 as written. Before running any Step 4 command, verify that the files exist locally and have been reviewed for the current node addresses, MACs, backup paths and console recovery procedure. Stop if any file is missing; do not download or copy an unreviewed playbook into the working directory.
 
 ### Step 4A — Gather network facts
 
@@ -385,7 +395,7 @@ This playbook performs the following on each node, in order:
 
 **Stop if:** any node fails, MACs are wrong, SSH test fails, or `netplan try` is not accepted.
 
-### Step 4B Verification — View deployed netplan
+### Step 4C — Verify deployed netplan
 
 Run on R2D2 to see the exact configuration deployed on each node:
 
@@ -423,7 +433,7 @@ network:
 
 Verify each node shows its own management MAC, management IP, and provider MAC. The `provider0` interface has no configured IP (Layer-2 only for Neutron).
 
-### Step 4C — Update /etc/hosts on all systems
+### Step 4D — Update /etc/hosts on all systems
 
 Run the hosts management playbook on all three nodes plus the manager (deployment host):
 
@@ -445,7 +455,7 @@ This playbook:
 
 **Stop if:** any backup fails, resolution returns wrong addresses, or playbook errors.
 
-### Step 4D — Final verification from manager
+### Step 4E — Final verification from manager
 
 Run a quick Ansible check to confirm everything is consistent:
 

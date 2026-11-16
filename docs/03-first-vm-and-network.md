@@ -68,6 +68,8 @@ If the destination already exists, it usually means a previous post-deploy/clien
 
 **Existing deployment:** If the OpenStack client and a working `clouds.yaml` are already configured, go directly to **Step 10B**. Do not rerun `post-deploy` or overwrite configuration just to open a new terminal.
 
+**STOP for an existing deployment:** Do not continue into the `First-time-only` subsection below. That subsection is only for a genuinely missing client file after a fresh deployment.
+
 **Fresh install only:** activate the same Kolla environment used in Step 9:
 
 ```bash
@@ -180,80 +182,229 @@ openstack port list --server lab-smoke --long
 openstack console url show lab-smoke
 ```
 
-Inspect the exact port with `openstack port show '<port-id>'`, replacing the quoted placeholder with the real ID. Inspect its security groups and existing rules. If this preserved VM is separately approved for the networking exercise, record its server ID and set `VM_ID` to that ID in the same terminal before continuing to Step 11; provision guest access only through a separately approved method. The remaining instructions are not permission to change this existing cloud. `ACTIVE` and the private address alone do not establish external reachability.
+Inspect the exact port with `openstack port show "$VM_PORT"`, after setting `VM_PORT` from the verified server port list. Inspect its security groups and existing rules. If this preserved VM is separately approved for the networking exercise, record its server ID and set `VM_ID` to that ID in the same terminal before continuing to Step 11; provision guest access only through a separately approved method. The remaining instructions are not permission to change this existing cloud. `ACTIVE` and the private address alone do not establish external reachability.
+
+**STOP — existing VM path ends here.** Do not continue into Step 10C unless Joe has separately approved creation of a new, differently named VM and the fresh-resource prerequisites are being followed.
 
 ### Step 10C: Prepare the key, image and VM
 
-The guest key must exist **before** the first boot. On the management VM, check `~/.ssh/lab-smoke` and `.pub`; if either exists, stop and inspect rather than overwrite. Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git.
+The guest key must exist **before** the first boot. Check both local key paths before generating anything; if either exists, stop and inspect rather than overwrite it:
+
+```bash
+for key_file in "$HOME/.ssh/lab-smoke" "$HOME/.ssh/lab-smoke.pub"; do
+  if [ -e "$key_file" ] || [ -L "$key_file" ]; then
+    printf 'STOP: key path already exists or is a symlink: %s\n' "$key_file"
+    exit 1
+  fi
+done
+```
+
+Generate a dedicated key locally; choose a passphrase at the prompt and never paste the private key or passphrase into chat or Git:
 
 ```bash
 ssh-keygen -t ed25519 -f "$HOME/.ssh/lab-smoke" -C lab-smoke
 ```
 
-Only after key generation succeeds and both key files exist, restrict the private key:
+Only after key generation succeeds, verify both files, ownership, mode and fingerprint:
 
 ```bash
+test -s "$HOME/.ssh/lab-smoke" && test -s "$HOME/.ssh/lab-smoke.pub"
 chmod 600 "$HOME/.ssh/lab-smoke"
+stat -c '%n owner=%U mode=%a' "$HOME/.ssh/lab-smoke" "$HOME/.ssh/lab-smoke.pub"
+ssh-keygen -lf "$HOME/.ssh/lab-smoke.pub"
 ```
 
-Only if `lab-smoke-key` was absent from the previous check, import the public key:
+If the cloud keypair already exists, stop and compare its fingerprint with the local public key. Only create it when the name is absent:
 
 ```bash
-openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key
+if openstack keypair show lab-smoke-key >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: lab-smoke-key already exists; inspect its fingerprint before reuse.'
+else
+  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key
+fi
 ```
 
-If it already exists, compare its public-key fingerprint with the local public key. Reuse it only if they match. Do not regenerate a lost private key and assume it matches.
+Verify the cloud keypair before creating the VM:
+
+```bash
+openstack keypair show lab-smoke-key -c name -c fingerprint
+```
+
+Reuse the keypair only when the displayed fingerprint matches the local public-key fingerprint. Do not regenerate a lost private key and assume it matches.
 
 Download CirrOS from its [official 0.6.3 release directory](https://download.cirros-cloud.net/0.6.3/); this x86-64 image is a disposable test image, **not production**. CirrOS has a publicly known default login and passwordless sudo: limit network exposure and remove the test VM when no longer needed. Its [publisher](https://github.com/cirros-dev/cirros) documents the guest user `cirros`.
 
 ```bash
-mkdir -p "$HOME/images"
+mkdir -m 700 -p "$HOME/images"
 cd "$HOME/images"
-[ ! -e cirros-0.6.3-x86_64-disk.img ] && curl -fL -o cirros-0.6.3-x86_64-disk.img https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img
+if [ -L cirros-0.6.3-x86_64-disk.img ] || [ -d cirros-0.6.3-x86_64-disk.img ]; then
+  printf '%s\n' 'STOP: image path is a symlink or directory.'
+  exit 1
+fi
+if [ ! -f cirros-0.6.3-x86_64-disk.img ]; then
+  tmp_image="$(mktemp "$HOME/images/.cirros-image.XXXXXX")" || exit 1
+  if ! curl --fail --location --proto '=https' --tlsv1.2 \
+      --output "$tmp_image" \
+      https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img; then
+    rm -f -- "$tmp_image"
+    exit 1
+  fi
+  if [ -e cirros-0.6.3-x86_64-disk.img ]; then
+    rm -f -- "$tmp_image"
+    printf '%s\n' 'STOP: image appeared during download; inspect both files.'
+    exit 1
+  fi
+  mv -- "$tmp_image" cirros-0.6.3-x86_64-disk.img
+fi
+stat -c '%n owner=%U mode=%a size=%s' cirros-0.6.3-x86_64-disk.img
 ```
 
-If the file already exists, the test returns nonzero and leaves it untouched; verify that file before use. A failed download may leave a partial file: remove only that known incomplete local download before retrying. Fetch the checksum without overwriting an existing file:
+If the checksum file is absent, download it to a temporary file and move it into place only after the transfer succeeds:
 
 ```bash
-[ ! -e cirros-0.6.3-SHA256SUMS ] && curl -fL -o cirros-0.6.3-SHA256SUMS https://download.cirros-cloud.net/0.6.3/SHA256SUMS
+if [ -L cirros-0.6.3-SHA256SUMS ] || [ -d cirros-0.6.3-SHA256SUMS ]; then
+  printf '%s\n' 'STOP: checksum path is a symlink or directory.'
+  exit 1
+fi
+if [ ! -f cirros-0.6.3-SHA256SUMS ]; then
+  tmp_sums="$(mktemp "$HOME/images/.cirros-sums.XXXXXX")" || exit 1
+  if ! curl --fail --location --proto '=https' --tlsv1.2 \
+      --output "$tmp_sums" \
+      https://download.cirros-cloud.net/0.6.3/SHA256SUMS; then
+    rm -f -- "$tmp_sums"
+    exit 1
+  fi
+  if [ -e cirros-0.6.3-SHA256SUMS ]; then
+    rm -f -- "$tmp_sums"
+    printf '%s\n' 'STOP: checksum file appeared during download; inspect both files.'
+    exit 1
+  fi
+  mv -- "$tmp_sums" cirros-0.6.3-SHA256SUMS
+fi
 ```
 
+Verify exactly the intended image checksum:
+
 ```bash
-grep '  cirros-0.6.3-x86_64-disk.img$' cirros-0.6.3-SHA256SUMS | sha256sum -c -
+grep -E '  cirros-0\.6\.3-x86_64-disk\.img$' cirros-0.6.3-SHA256SUMS | sha256sum -c -
 ```
 
 **Expected output:** the image filename followed by `OK`. Stop if download or checksum verification fails. This checks consistency with the publisher's checksum over HTTPS, not an independent signature.
 
 ### Step 10D: Create the private network and test resources
 
-Only after the inspection and collision gates pass, execute each command separately; stop on failure and record each returned ID. A flavor defines the VM hardware size; an image is the boot disk template.
+Only use this fresh-resource path after Step 10B inspection confirms that the intended names do not already exist and that `10.254.211.0/24` does not overlap a connected VPN, routed network or existing subnet. If an object already exists, inspect and reuse it by ID only when it is compatible; do not run its create command again.
+
+Run **one resource command at a time**. After each successful create, record the returned ID, set the variable, and verify the object before continuing. Do not paste the entire sequence into one shell block.
+
+**A — Create and verify the private network:**
 
 ```bash
-openstack network create lab-private
-openstack subnet create lab-private-subnet --network lab-private --subnet-range 10.254.211.0/24 --dhcp
-openstack flavor create lab.tiny --vcpus 1 --ram 512 --disk 1
-openstack image create lab-test-image --file "$HOME/images/cirros-0.6.3-x86_64-disk.img" --disk-format qcow2 --container-format bare --private
+PRIVATE_NET_ID="$(openstack network create lab-private -f value -c id)" || exit 1
+printf 'PRIVATE_NET_ID=%s\n' "$PRIVATE_NET_ID"
+openstack network show "$PRIVATE_NET_ID" -c id -c name -c status -c subnets
+```
+
+**Pass when:** the ID, name `lab-private` and `ACTIVE` status are shown. **Stop if:** the network already exists, the command fails, or the ID is ambiguous.
+
+**B — Create and verify the private subnet:**
+
+```bash
+PRIVATE_SUBNET_ID="$(openstack subnet create \
+  --network "$PRIVATE_NET_ID" \
+  --subnet-range 10.254.211.0/24 \
+  --dhcp \
+  lab-private-subnet \
+  -f value -c id)" || exit 1
+printf 'PRIVATE_SUBNET_ID=%s\n' "$PRIVATE_SUBNET_ID"
+openstack subnet show "$PRIVATE_SUBNET_ID" -c id -c name -c network_id -c cidr -c enable_dhcp
+```
+
+**Pass when:** the subnet is attached to `PRIVATE_NET_ID`, uses `10.254.211.0/24`, and DHCP is enabled. **Stop if:** the CIDR overlaps, the network ID differs, or the subnet already exists.
+
+**C — Create and verify the flavor:**
+
+```bash
+FLAVOR_ID="$(openstack flavor create lab.tiny --vcpus 1 --ram 512 --disk 1 -f value -c id)" || exit 1
+printf 'FLAVOR_ID=%s\n' "$FLAVOR_ID"
+openstack flavor show "$FLAVOR_ID" -c id -c name -c vcpus -c ram -c disk
+```
+
+**D — Upload and verify the test image:**
+
+```bash
+IMAGE_ID="$(openstack image create lab-test-image \
+  --file "$HOME/images/cirros-0.6.3-x86_64-disk.img" \
+  --disk-format qcow2 \
+  --container-format bare \
+  --private \
+  -f value -c id)" || exit 1
+printf 'IMAGE_ID=%s\n' "$IMAGE_ID"
+openstack image show "$IMAGE_ID" -c id -c name -c status -c visibility
+```
+
+**Pass when:** image status is `active` and visibility is `private`. **Stop if:** the upload fails, status is not `active`, or the image name already belongs to another object.
+
+**E — Create and verify the dedicated security group:**
+
+A security group may already exist from an earlier attempt. Check before creating it and require exactly zero or one match:
+
+```bash
+mapfile -t GROUP_IDS < <(openstack security group list --name lab-vm-access -f value -c ID)
+if [ "${#GROUP_IDS[@]}" -gt 1 ]; then
+  printf 'STOP: more than one lab-vm-access group matched.\n'
+  exit 1
+elif [ "${#GROUP_IDS[@]}" -eq 1 ]; then
+  ACCESS_GROUP_ID="${GROUP_IDS[0]}"
+else
+  ACCESS_GROUP_ID="$(openstack security group create lab-vm-access -f value -c id)" || exit 1
+fi
+printf 'ACCESS_GROUP_ID=%s\n' "$ACCESS_GROUP_ID"
+openstack security group show "$ACCESS_GROUP_ID" -c id -c name -c project_id
+```
+
+Select the actual IPv4 address of the client that will test the VM. Account for NAT; do not type the literal placeholder and do not use `0.0.0.0/0` for convenience. Set the resulting CIDR only after verifying the source address:
+
+```bash
+ip -4 route get 192.168.0.150
+read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
+if [[ ! "$TRUSTED_CLIENT_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  printf '%s\n' 'STOP: enter a real IPv4 address, not a placeholder.'
+  exit 1
+fi
+TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
+printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
+```
+
+Before each rule create, review the current rule list. If the exact direction, protocol, port and CIDR already exist, do not create a duplicate; record and verify the existing rule ID. Create only a missing rule. Add each approved ingress rule separately, capture its returned ID and verify it:
+
+```bash
+SSH_RULE_ID="$(openstack security group rule create \
+  --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
+  --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+  -f value -c id)" || exit 1
+printf 'SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+openstack security group rule show "$SSH_RULE_ID"
 ```
 
 ```bash
-openstack subnet show lab-private-subnet
-openstack flavor show lab.tiny
-openstack image show lab-test-image -c status
+ICMP_RULE_ID="$(openstack security group rule create \
+  --ingress --ethertype IPv4 --protocol icmp \
+  --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
+  -f value -c id)" || exit 1
+printf 'ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+openstack security group rule show "$ICMP_RULE_ID"
 ```
 
-**Expected output:** the intended subnet and flavor, and image status `active`. Stop otherwise. For DNS tests later, inspect the private subnet's DNS servers (`openstack subnet show lab-private-subnet`). Only if needed, and only on this newly created dedicated subnet, set a verified reachable DNS resolver with `openstack subnet set --dns-nameserver <verified-resolver-ip> lab-private-subnet`; do not change DNS on a shared subnet without review.
-
-Select the actual source address of a trusted test client on the provider LAN, accounting for any NAT. Replace the example input with its verified `/32`; never use `0.0.0.0/0` for convenience. Create a dedicated group only if absent. Default egress rules can permit outbound traffic; inspect them and all other groups because rules are additive.
+Verify the complete group before creating the VM:
 
 ```bash
-TRUSTED_CIDR='<verified-client-ip>/32'
-openstack security group create lab-vm-access
-openstack security group rule create --ingress --ethertype IPv4 --protocol tcp --dst-port 22 --remote-ip "$TRUSTED_CIDR" lab-vm-access
-openstack security group rule create --ingress --ethertype IPv4 --protocol icmp --remote-ip "$TRUSTED_CIDR" lab-vm-access
-openstack security group rule list lab-vm-access
+openstack security group rule list "$ACCESS_GROUP_ID"
 ```
 
-**Gate:** confirm only the intended ingress rules and appropriate egress are present. Before reusing an existing group, review its rules, other attached ports and ownership. Do not edit a shared group blindly.
+**Pass when:** the intended SSH and ICMP ingress rules are present and the default egress rules are understood. **Stop if:** the CIDR is rejected, the group is shared or ambiguous, or a rule already exists and its ownership is unclear.
+
+Do not create the VM until the network, subnet, flavor, image and security-group IDs have all been recorded and individually verified.
 
 ### Step 10E: Boot the test VM and check it
 
@@ -263,16 +414,25 @@ Choose a name that does not already exist. On a genuinely fresh installation use
 VM_NAME='lab-smoke'
 ```
 
-Recheck `openstack server list --all-projects` for the chosen name before boot. Use the verified IDs rather than names for the flavor, image, network or security group if any names are ambiguous; never proceed with an ambiguous target. The fresh create explicitly supplies only the dedicated security group and keypair:
+Recheck `openstack server list --all-projects` for the chosen name before boot. Use the verified IDs recorded in Step 10D rather than names. The fresh create explicitly supplies only the dedicated security group and keypair:
 
 ```bash
-openstack server create "$VM_NAME" --flavor lab.tiny --image lab-test-image --network lab-private --security-group lab-vm-access --key-name lab-smoke-key --wait
+openstack server create "$VM_NAME" \
+  --flavor "$FLAVOR_ID" \
+  --image "$IMAGE_ID" \
+  --network "$PRIVATE_NET_ID" \
+  --security-group "$ACCESS_GROUP_ID" \
+  --key-name lab-smoke-key \
+  --wait
 ```
 
-After creation succeeds, record its returned unique server ID and set it below. Replace the quoted placeholder with that ID, without angle brackets:
+**Pass when:** the command returns a server ID and does not report an error. **Stop if:** the name is already present, any referenced ID is missing/ambiguous, or the server enters `ERROR`.
+
+After creation succeeds, capture the unique server ID from the uniquely named server and verify it:
 
 ```bash
-VM_ID='<new-server-id>'
+VM_ID="$(openstack server show "$VM_NAME" -f value -c id)"
+printf 'VM_ID=%s\n' "$VM_ID"
 openstack server show "$VM_ID" -c id -c status -c addresses -c key_name
 openstack port list --server "$VM_ID" --long
 ```
@@ -285,7 +445,7 @@ openstack port list --server "$VM_ID" --long
 
 This path creates a flat external provider network, dedicated router and floating IP; it does **not** reconfigure switches, node interfaces or DHCP. Verify the existing Kolla/Neutron mapping `physnet1:br-ex`, the `provider0` uplink, switch/VLAN and upstream path on the actual hosts before proceeding. A link-up indication alone does not prove that the upstream network works. The external LAN is `192.168.0.0/24`, gateway `192.168.0.1`, and Neutron pool `192.168.0.151–192.168.0.199`. Joe has confirmed that pool is excluded from DHCP; the VIP `.150` is excluded and nodes `.200–.202` are outside the pool. Confirm the pool is also clear of **all** static assignments, current allocations and other Neutron networks with the LAN administrator and the relevant DHCP/IPAM records before assignment; an unanswered ping does not establish availability. The router gateway and floating IP each consume a pool address.
 
-Re-run the inspection in 10.1 and also:
+Re-run the inspection in **Step 10B — Authenticate and inspect the existing cloud** and also:
 
 ```bash
 openstack port list --server "$VM_ID" --long
@@ -294,46 +454,111 @@ openstack floating ip list
 
 Select the intended port from the output; inspect it, record its original security-group IDs and existing floating IP association, and inspect any router or subnet already attached. Stop for conflicting or ambiguous resources. If an external network, subnet or router already exists, inspect type, physical mapping, CIDR, pool, gateway, SNAT, ownership and all dependent ports. Reuse a network by its ID only if it is fully compatible, and skip its create command. A reused/shared router must not have its gateway or interfaces changed without separate impact approval; if the private subnet is already attached, inspect the existing route rather than creating another router. Never allocate or associate a second FIP if one already exists on the target port without explicit review.
 
-**Input:** Replace the placeholders with the recorded unique VM port ID, fixed IPv4 and private subnet ID. Do not type the angle brackets:
+Discover the selected VM port and its fixed IP from the verified server. This expects exactly one port and one fixed IP; stop if the VM has multiple ports or addresses and inspect them manually:
 
 ```bash
-VM_PORT='<verified-vm-port-id>'
-FIXED_IP='<verified-vm-fixed-ip>'
-PRIVATE_SUBNET_ID='<verified-private-subnet-id>'
+mapfile -t VM_PORT_IDS < <(openstack port list --server "$VM_ID" -f value -c ID)
+if [ "${#VM_PORT_IDS[@]}" -ne 1 ]; then
+  printf 'STOP: expected exactly one VM port; found %s.\n' "${#VM_PORT_IDS[@]}"
+  exit 1
+fi
+VM_PORT="${VM_PORT_IDS[0]}"
+PORT_JSON="$(openstack port show "$VM_PORT" -f json)" || exit 1
+PORT_VALUES="$(printf '%s\n' "$PORT_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=d.get("fixed_ips", []); raise SystemExit("expected exactly one fixed IP") if len(f) != 1 else print(f[0]["ip_address"], f[0]["subnet_id"])')" || exit 1
+read -r FIXED_IP PRIVATE_SUBNET_ID <<< "$PORT_VALUES"
+printf 'VM_PORT=%s\nFIXED_IP=%s\nPRIVATE_SUBNET_ID=%s\n' "$VM_PORT" "$FIXED_IP" "$PRIVATE_SUBNET_ID"
 openstack port show "$VM_PORT"
 ```
 
-The following **new dedicated network/router path** works for a fresh VM or a separately approved existing VM. Use it only when inspection confirms all three names `lab-external`, `lab-external-subnet` and `lab-router` are absent, the private subnet is not already attached to a router, and the address pool is available. Stop on a failure; record each returned ID. Never recreate the VM or its private network for this step.
+Choose the resource path before running any create command:
 
-Create the external network:
+- **Existing-resource path:** if `lab-external`, `lab-external-subnet` or `lab-router` exists, inspect it by ID and verify compatibility. Set the corresponding variable from the verified object and skip its create command.
+- **New dedicated path:** only when the named object is absent, create it, capture its ID, verify it, and stop before moving to the next resource.
+
+The commands below deliberately use the object name only to capture the ID immediately after a successful create. Do not continue after a failed command, and do not use a name when more than one object matches.
+
+**A — Create or identify the external network:**
+
+If `lab-external` is absent and the physical mapping/address plan has passed inspection, create it:
 
 ```bash
-openstack network create --external --provider-network-type flat --provider-physical-network physnet1 lab-external
+EXT_NET_ID="$(openstack network create \
+  --external \
+  --provider-network-type flat \
+  --provider-physical-network physnet1 \
+  lab-external \
+  -f value -c id)" || exit 1
+printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
+openstack network show "$EXT_NET_ID"
 ```
 
-Record its returned ID, replacing the placeholder, then create the subnet:
+If the network already existed, run the same capture and verification only after confirming it is the intended external `physnet1` network. **Pass when:** exactly one compatible external network is identified. **Stop if:** the network is missing, duplicated, or has the wrong physical mapping.
+
+**B — Create or identify the external subnet:**
+
+Only if `lab-external-subnet` is absent and `EXT_NET_ID` has passed verification, create it:
 
 ```bash
-EXT_NET_ID='<new-external-network-id>'
-openstack subnet create --network "$EXT_NET_ID" --subnet-range 192.168.0.0/24 --gateway 192.168.0.1 --allocation-pool start=192.168.0.151,end=192.168.0.199 --no-dhcp lab-external-subnet
+EXT_SUBNET_ID="$(openstack subnet create \
+  --network "$EXT_NET_ID" \
+  --subnet-range 192.168.0.0/24 \
+  --gateway 192.168.0.1 \
+  --allocation-pool start=192.168.0.151,end=192.168.0.199 \
+  --no-dhcp \
+  lab-external-subnet \
+  -f value -c id)" || exit 1
+printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
+openstack subnet show "$EXT_SUBNET_ID"
 ```
 
-Record the returned subnet ID, then create the router:
+**Pass when:** the subnet uses `192.168.0.0/24`, gateway `192.168.0.1`, the intended allocation pool, no DHCP, and `network_id` equals `EXT_NET_ID`. **Stop if:** the CIDR, pool, gateway or network ID differs.
+
+**C — Create or identify the router:**
+
+Only after the external subnet has passed verification, and only if `lab-router` is absent, create it:
 
 ```bash
-EXT_SUBNET_ID='<new-external-subnet-id>'
-openstack router create lab-router
+ROUTER_ID="$(openstack router create lab-router -f value -c id)" || exit 1
+printf 'ROUTER_ID=%s\n' "$ROUTER_ID"
+openstack router show "$ROUTER_ID"
 ```
 
-Record the returned router ID. Only for this newly created dedicated router, set its gateway and attach the existing private subnet. Run the commands one at a time and stop on error:
+If the router already existed, identify it and inspect its gateway, interfaces, owner and dependencies. Do not change a shared router without separate impact approval.
+
+**D — Set the gateway on the newly created dedicated router:**
+
+Run this only when the router was created by this exercise:
 
 ```bash
-ROUTER_ID='<new-router-id>'
 openstack router set --external-gateway "$EXT_NET_ID" --enable-snat "$ROUTER_ID"
+```
+
+Verify before attaching the private subnet:
+
+```bash
+openstack router show "$ROUTER_ID"
+```
+
+**Pass when:** the router shows the intended external network gateway and SNAT state. **Stop if:** the router is shared, already has an unexpected gateway, or the mutation fails.
+
+**E — Attach the private subnet:**
+
+Run this only after the gateway verification passes and only when the private subnet is not already attached:
+
+```bash
 openstack router add subnet "$ROUTER_ID" "$PRIVATE_SUBNET_ID"
 ```
 
-For the **existing-resource path**, do not run those creation or router-mutation commands. Inspect the existing external network, subnet and router by ID. Continue only if they already have the correct physical mapping, pool, gateway, SNAT, and private-subnet attachment; record their IDs in `EXT_NET_ID`, `EXT_SUBNET_ID` and `ROUTER_ID`. If a shared router needs a change or compatibility is uncertain, stop for a separate impact review. Do not silently edit a shared router.
+Verify the attachment:
+
+```bash
+openstack router show "$ROUTER_ID"
+openstack port list --router "$ROUTER_ID"
+```
+
+**Pass when:** the router has the intended external gateway and exactly the expected private-subnet interface. **Stop if:** the subnet is already attached, the router state differs, or the interface is unexpected.
+
+For an existing/shared router, do not run either mutation block without separate impact approval.
 
 For either path, inspect the selected IDs:
 
@@ -348,35 +573,76 @@ openstack port list --router "$ROUTER_ID"
 
 ### Step 11B: Associate a floating IP with the exact VM port
 
-**Fresh VM:** The group was created in Step 10. Inspect its rules and the port; record the group's unique ID.
+**A — Select and verify the security group:**
 
-**Existing VM:** The historical `lab-smoke` used only its default group, so inspect the current groups and create a separate group only if no suitable reviewed group exists. For a new dedicated group, first select the verified trusted LAN client's actual `/32` source, accounting for NAT. Replace the placeholder, then create the group and record its returned ID:
+For a fresh VM, use the dedicated group created and verified in Step 10D. For an existing VM, inspect its attached group IDs first and reuse a compatible dedicated group; do not recreate a group that already exists.
+
+Enter the verified security-group UUID from the previous inspection; do not type a placeholder:
 
 ```bash
-TRUSTED_CIDR='<verified-client-ip>/32'
-openstack security group create lab-vm-access
+read -r -p 'Enter verified security-group UUID: ' ACCESS_GROUP_ID
+if [[ ! "$ACCESS_GROUP_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  printf '%s\n' 'STOP: the security-group ID is not a UUID.'
+  exit 1
+fi
+openstack security group show "$ACCESS_GROUP_ID" -c id -c name -c project_id
+openstack security group rule list "$ACCESS_GROUP_ID"
 ```
 
-Only after creation succeeds, set `ACCESS_GROUP_ID` to the returned ID. Permit ping from that source:
+If no suitable group exists, stop and create a separate dedicated group only after approval. Record its returned ID, then rerun the verification above. Never put the literal placeholder into a command.
+
+**B — Verify or add the approved ingress rules:**
+
+Select the actual IPv4 address of the client that will test the floating IP, accounting for NAT. Do not use the API VIP, the floating-IP pool, or `0.0.0.0/0` as the source. Set this only after verifying the source address:
 
 ```bash
-ACCESS_GROUP_ID='<new-security-group-id>'
-openstack security group rule create --ingress --ethertype IPv4 --protocol icmp --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID"
+ip -4 route get 192.168.0.150
+read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
+if [[ ! "$TRUSTED_CLIENT_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  printf '%s\n' 'STOP: enter a real IPv4 address, not a placeholder.'
+  exit 1
+fi
+TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
+printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
 ```
 
-Add SSH from the same trusted source **only after** guest authentication is securely configured and this rule is approved:
+If the verified group does not already contain the ICMP rule, add it and inspect the returned rule:
 
 ```bash
-openstack security group rule create --ingress --ethertype IPv4 --protocol tcp --dst-port 22 --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID"
+ICMP_RULE_ID="$(openstack security group rule create \
+  --ingress \
+  --ethertype IPv4 \
+  --protocol icmp \
+  --remote-ip "$TRUSTED_CIDR" \
+  "$ACCESS_GROUP_ID" \
+  -f value -c id)" || exit 1
+printf 'ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
+openstack security group rule show "$ICMP_RULE_ID"
 ```
 
-For a reviewed existing group, do not recreate or modify it. In either path, set `ACCESS_GROUP_ID` to the verified ID of the chosen group (replace the placeholder) and inspect the group and port:
+Only after guest authentication is securely configured and SSH access is approved, add the SSH rule if it is absent:
 
 ```bash
-ACCESS_GROUP_ID='<verified-security-group-id>'
+SSH_RULE_ID="$(openstack security group rule create \
+  --ingress \
+  --ethertype IPv4 \
+  --protocol tcp \
+  --dst-port 22 \
+  --remote-ip "$TRUSTED_CIDR" \
+  "$ACCESS_GROUP_ID" \
+  -f value -c id)" || exit 1
+printf 'SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
+openstack security group rule show "$SSH_RULE_ID"
+```
+
+Verify the complete group and port state:
+
+```bash
 openstack security group rule list "$ACCESS_GROUP_ID"
 openstack port show "$VM_PORT"
 ```
+
+**Pass when:** the intended group is attached to the selected port and the required ingress rules are present. **Stop if:** the CIDR is rejected, the group is shared or ambiguous, a rule already exists with unclear ownership, or the port has unexpected security groups.
 
 If the group is **not already attached** to the selected port and this change is approved, add it and record that this exercise added the association:
 
@@ -387,17 +653,31 @@ openstack port show "$VM_PORT"
 
 This adds a group without removing existing groups. Compare the port's complete group list with the original. Broad rules in any other group can still allow access. Check port security and guest firewall too. Do not alter a shared security group to make a test pass.
 
-Allocate once from the verified pool, record the returned ID/address, and do not repeat if association fails:
+Allocate exactly one floating IP from the verified pool and capture its returned ID:
 
 ```bash
-openstack floating ip create --subnet "$EXT_SUBNET_ID" "$EXT_NET_ID"
+FIP_ID="$(openstack floating ip create --subnet "$EXT_SUBNET_ID" "$EXT_NET_ID" -f value -c id)" || exit 1
+printf 'FIP_ID=%s\n' "$FIP_ID"
 ```
 
-**Input:** replace with the new floating-IP ID from the output; then associate the recorded port and fixed IP:
+Stop here and verify that the returned address belongs to the approved pool and is not already assigned:
 
 ```bash
-FIP_ID='<new-floating-ip-id>'
-openstack floating ip set --port "$VM_PORT" --fixed-ip-address "$FIXED_IP" "$FIP_ID"
+openstack floating ip show "$FIP_ID"
+```
+
+Only after the FIP is verified as unassociated, attach it to the recorded VM port and fixed IP:
+
+```bash
+openstack floating ip set \
+  --port "$VM_PORT" \
+  --fixed-ip-address "$FIXED_IP" \
+  "$FIP_ID"
+```
+
+Verify the association:
+
+```bash
 openstack floating ip show "$FIP_ID"
 openstack port show "$VM_PORT"
 openstack server show "$VM_ID" -c status -c addresses
@@ -407,21 +687,22 @@ openstack server show "$VM_ID" -c status -c addresses
 
 ### Step 11C: Test inbound, outbound and DNS separately
 
-From the trusted LAN client that already holds the matching private key, replace the address with the allocated FIP. Keep private keys on the machine where they were created; if that client lacks an authorized key, provision a separate public key through an approved method rather than moving a private key.
+From the trusted LAN client that already holds the matching private key, derive the allocated address from the verified FIP ID. Keep private keys on the machine where they were created; if that client lacks an authorized key, provision a separate public key through an approved method rather than moving a private key.
 
 ```bash
-FLOATING_IP='<floating-ip>'
+FLOATING_IP="$(openstack floating ip show "$FIP_ID" -f value -c floating_ip_address)"
+printf 'FLOATING_IP=%s\n' "$FLOATING_IP"
 ping -c 3 "$FLOATING_IP"
 ssh -i "$HOME/.ssh/lab-smoke" "cirros@$FLOATING_IP"
 ```
 
 **Expected:** ping replies if ICMP is allowed, then SSH login as `cirros` after verifying the host key by a trusted console. Failure can be upstream filtering, security groups, routing, guest firewall/service, or key injection; a successful ping is not SSH proof. This tests LAN reachability, not public access.
 
-From the guest's authorized console or SSH session, perform separate tests. Choose a known reachable external IP and a domain appropriate to your network:
+Choose a known reachable external IP and a domain appropriate to your network. Enter real test values; do not type placeholders:
 
 ```bash
-EXTERNAL_IP='<known-reachable-external-ip>'
-TEST_DOMAIN='<known-domain>'
+read -r -p 'Enter a known reachable external IPv4 address: ' EXTERNAL_IP
+read -r -p 'Enter a known DNS test domain: ' TEST_DOMAIN
 ping -c 3 10.254.211.1
 ping -c 3 "$EXTERNAL_IP"
 nslookup "$TEST_DOMAIN"

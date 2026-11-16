@@ -138,30 +138,28 @@ Use the real configured cloud name rather than the example. The second command r
    terraform validate
    ```
 
-   Stop if either check fails. Validation does not prove cloud connectivity. Next, review the plan in the private terminal:
+   Stop if either check fails. Validation does not prove cloud connectivity. Review and save the exact plan in the private sandbox directory:
 
    ```bash
-   terraform plan
+   terraform plan -out=tfplan
    ```
 
-   Confirm the sandbox project and check that the plan creates exactly the intended network, with no unexpected updates or deletions. Plans and state can contain sensitive values; do not paste them into chat.
-5. Only with explicit approval, run apply and review Terraform's fresh confirmation prompt:
+   Confirm the sandbox project and check that the plan creates exactly the intended network, with no unexpected updates or deletions. Plans and state can contain sensitive values; do not paste them into chat. Apply the reviewed plan file, not a newly calculated plan:
+5. Only with explicit approval, run the saved plan and review Terraform's confirmation prompt:
 
    ```bash
-   terraform apply
+   terraform apply tfplan
    ```
 
    After apply succeeds, list networks in the **sandbox project**, identify the exact network ID and inspect that ID. Do not assume an exit code proves the network is usable:
 
    ```bash
-   openstack --os-cloud lab-sandbox network list
+   openstack --os-cloud lab-sandbox network list -f table -c ID -c Name
+   read -r -p 'Enter the verified Terraform network UUID: ' SANDBOX_NETWORK_ID
+   openstack --os-cloud lab-sandbox network show "$SANDBOX_NETWORK_ID"
    ```
 
-   ```bash
-   openstack --os-cloud lab-sandbox network show '<verified-network-id>'
-   ```
-
-   Replace the quoted placeholder with the actual ID; do not type the angle brackets.
+   Stop if the ID is not the network created by this Terraform state. Do not type a documentation placeholder.
 6. To remove the network, obtain explicit destroy approval and inspect `terraform plan -destroy`. Confirm it includes only resources owned by this sandbox state. Run `terraform destroy` only after review, then verify that the exact network ID is absent. Never destroy shared networks or resources created outside this exercise.
 
 Do not commit `.terraform/`, state files, plans, `clouds.yaml` or credentials. A provider lock file is distinct from these secrets, but review it before committing. You can review this recipe's syntax without creating resources. Do not claim a live apply or destroy unless it actually succeeded.

@@ -14,6 +14,24 @@ This guide walks through building and operating a small, three-node OpenStack la
 
 > A block marked `bash` contains shell commands. Run them only in the stated location and after the preceding checks pass. Pictures, `yaml`/`ini`/`hcl` configuration, diagrams, tables and example output are for reading or editing the specified file, not for typing into a terminal.
 
+## How to follow a resource-creation step
+
+When a step creates a cloud object, do not paste the entire section into the terminal. The guide uses this sequence deliberately:
+
+```text
+inspect existing objects
+        ↓
+create one object, if absent
+        ↓
+record the returned ID
+        ↓
+verify that ID and its dependencies
+        ↓
+continue to the next object
+```
+
+If a command fails, stop. Do not rerun a create command until you have checked whether the first attempt created the object anyway. A placeholder such as `<returned-network-id>` is documentation input, not a value to type literally.
+
 ## The lab at a glance
 
 ![Three-node lab topology](diagrams/lab-topology.svg)
@@ -43,15 +61,15 @@ These values are drafts for this lab, not universal defaults. Being outside the 
 | [1. Ubuntu and recovery access](docs/01-foundations.md#step-1-install-and-identify-the-systems) | Identify the correct OS disk, install Ubuntu and verify console recovery. |
 | [2. SSH and privilege access](docs/01-foundations.md#step-2-establish-ssh-access) | Establish key-based management access and verified non-interactive sudo on each system. |
 | [3. Management tools](docs/01-foundations.md#step-3-install-kolla-ansible-on-the-manager) | Install Ansible and Kolla-Ansible on the management VM. |
-| [4. Network and disk plan](docs/01-foundations.md#step-4-plan-and-configure-node-networking) | Record interfaces, addresses, VIP, floating-IP pool and storage identities. |
+| [4. Network and disk plan](docs/01-foundations.md#step-4-plan-and-configure-node-networking-with-ansible) | Record interfaces, addresses, VIP, floating-IP pool and storage identities. |
 | [5. Kolla inventory](docs/02-deploy-openstack.md#step-5-build-and-check-the-multinode-inventory) | Target the three actual nodes in the correct groups. |
 | [6. Hostnames and time](docs/02-deploy-openstack.md#step-6-verify-names-and-time) | Verify resolution, timezone and clock synchronization. |
 | [7. Kolla configuration](docs/02-deploy-openstack.md#step-7-configure-globals-and-protect-passwords) | Configure interfaces and VIP; protect secrets. |
 | [8. Bootstrap and prechecks](docs/02-deploy-openstack.md#step-8-verify-sudo-bootstrap-and-precheck) | Prepare hosts and stop on failing prerequisites. |
 | [9. Deploy and verify](docs/02-deploy-openstack.md#step-9-deploy-and-validate) | Deploy the control plane and verify the reported APIs and agents. |
 | [Recovery after shutdown/reboot](docs/SHUTDOWN-AND-RECOVERY.md) | Perform read-only post-reboot checks, make an evidence-based recovery decision, and restart one approved service when required. |
-| [10. Test VM](docs/03-first-vm-and-network.md#step-10-create-the-first-test-vm) | Create a private network, image, keypair and small VM. |
-| [11. Floating IP and security](docs/03-first-vm-and-network.md#step-11-connect-the-private-network-to-the-provider-lan) | Connect the VM to the provider network with restricted access; test each layer. |
+| [10. First VM and client](docs/03-first-vm-and-network.md#step-10-create-the-first-test-vm) | Configure the OpenStack CLI client, then create and verify a private network, image, keypair and small VM one resource at a time. |
+| [11. Provider network and floating IP](docs/03-first-vm-and-network.md#step-11-connect-the-private-network-to-the-provider-lan) | Verify or create the external network, subnet and router in dependency order; then allocate and associate one floating IP and test each layer. |
 | [12. Cinder storage](docs/04-storage-operations-extensions.md#step-12-plan-cinder-block-storage) | Inspect the existing SSDs and validate the LVM design before enabling storage. |
 | [13. Failure and HA testing](docs/04-storage-operations-extensions.md#step-13-ha-failure-testing-and-recovery) | Plan and explicitly approve a controlled failure exercise. |
 | [14. Terraform](docs/04-storage-operations-extensions.md#step-14-terraform-sandbox) | Learn infrastructure as code after the manual cloud tests. |

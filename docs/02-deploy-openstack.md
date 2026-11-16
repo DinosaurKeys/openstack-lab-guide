@@ -22,11 +22,11 @@ command -v ansible-playbook
 Before editing, check whether the backup already exists. If it does, stop and inspect it instead of overwriting it:
 
 ```bash
-if [ -e $KOLLA_CONFIG_PATH/multinode.pre-step5 ]; then
+if [ -e "$KOLLA_CONFIG_PATH/multinode.pre-step5" ]; then
   echo 'STOP: inventory backup already exists.'
 else
-  cp -a $KOLLA_CONFIG_PATH/multinode $KOLLA_CONFIG_PATH/multinode.pre-step5 &&
-    cmp -s $KOLLA_CONFIG_PATH/multinode $KOLLA_CONFIG_PATH/multinode.pre-step5 &&
+  cp -a -- "$KOLLA_CONFIG_PATH/multinode" "$KOLLA_CONFIG_PATH/multinode.pre-step5" &&
+    cmp -s -- "$KOLLA_CONFIG_PATH/multinode" "$KOLLA_CONFIG_PATH/multinode.pre-step5" &&
     echo 'Inventory backup verified.'
 fi
 ```
@@ -75,17 +75,17 @@ KEY="$HOME/.ssh/openstack_lab_ed25519"
 NODE_USER="joe"
 
 if [ ! -f "$KEY" ]; then
-  printf 'STOP: SSH private key not found: %s\\n' "$KEY"
+  printf 'STOP: SSH private key not found: %s\n' "$KEY"
   exit 1
 fi
 
 stat -c 'SSH key path=%n owner=%U mode=%a' "$KEY"
 
 for address in 192.168.0.200 192.168.0.201 192.168.0.202; do
-  printf '\\n--- %s ---\\n' "$address"
-  ssh -o BatchMode=yes -o ConnectTimeout=10 \\
-    -i "$KEY" "$NODE_USER@$address" \\
-    'printf "remote_user=%s\\n" "$(id -un)"; printf "sudo_uid="; sudo -n id -u'
+  printf '\n--- %s ---\n' "$address"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    -i "$KEY" "$NODE_USER@$address" \
+    'printf "remote_user=%s\n" "$(id -un)"; printf "sudo_uid="; sudo -n id -u'
 done
 ```
 
@@ -154,11 +154,11 @@ First, confirm on **every node** that `mgmt0` is the intended management interfa
 Back up globals, taking care not to overwrite an earlier backup:
 
 ```bash
-if [ -e $KOLLA_CONFIG_PATH/globals.yml.pre-step7 ]; then
+if [ -e "$KOLLA_CONFIG_PATH/globals.yml.pre-step7" ]; then
   echo 'STOP: globals backup already exists.'
 else
-  cp -a $KOLLA_CONFIG_PATH/globals.yml $KOLLA_CONFIG_PATH/globals.yml.pre-step7 &&
-    cmp -s $KOLLA_CONFIG_PATH/globals.yml $KOLLA_CONFIG_PATH/globals.yml.pre-step7 &&
+  cp -a -- "$KOLLA_CONFIG_PATH/globals.yml" "$KOLLA_CONFIG_PATH/globals.yml.pre-step7" &&
+    cmp -s -- "$KOLLA_CONFIG_PATH/globals.yml" "$KOLLA_CONFIG_PATH/globals.yml.pre-step7" &&
     echo 'Globals backup verified.'
 fi
 ```
