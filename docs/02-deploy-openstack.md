@@ -171,6 +171,7 @@ network_interface: "mgmt0"
 neutron_external_interface: "provider0"
 enable_neutron_provider_networks: true
 kolla_internal_vip_address: "192.168.0.150"
+enable_heat: false
 enable_cinder: false
 enable_prometheus: false
 enable_grafana: false
@@ -324,3 +325,16 @@ sudo docker ps --format 'table {{.Names}}\t{{.Status}}'
 Compare the running containers and any reported health states against the enabled services and their inventory placement. Before continuing, investigate any expected containers that are missing, restarting or unhealthy. A running container alone does not prove its API or cluster is healthy. Return to the management VM afterward.
 
 Neither a successful recap nor configuration validation proves Keystone authentication works or a VM can boot. In the next cloud-verification step, check authenticated API access and a disposable VM separately. Report each result you actually observe. Do not claim a live deployment or verification based on this guide alone.
+
+## Optional: Disable Heat before a fresh deployment
+
+Heat provides orchestration and is not needed for the base lab. On the management VM, set `enable_heat: false` in the existing `$KOLLA_CONFIG_PATH/globals.yml` **before Step 8 and the first deployment**; Step 7 includes the setting. Edit the existing key rather than adding a duplicate, and run the Step 7 YAML and duplicate-key check. Verify the active setting without exposing other configuration:
+
+```bash
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+grep -nE '^[[:space:]]*enable_heat[[:space:]]*:' "$KOLLA_CONFIG_PATH/globals.yml"
+```
+
+**Pass when:** exactly one active line says `enable_heat: false`. Deploy normally only after the previous checks pass. Heat APIs and stack orchestration will not be available.
+
+**Already deployed?** Changing this setting alone does not stop or remove existing Heat containers, stacks, endpoints, or RabbitMQ queues. Inspect the deployed services and use a separately reviewed, approved removal plan; do not run the fresh-install procedure against an existing cloud. For queue inspection and carefully targeted deletion, see [RabbitMQ queue cleanup](RABBITMQ-QUEUE-CLEANUP.md).
