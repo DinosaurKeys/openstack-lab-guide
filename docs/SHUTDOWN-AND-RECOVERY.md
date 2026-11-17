@@ -1,41 +1,67 @@
 # Shutdown, Reboot and Recovery
 
-**Purpose:** safely shut down the three-node Kolla-Ansible lab, check it after reboot, recover only when the evidence requires recovery, and restart one approved service when appropriate.
+**Purpose:** shut the three-node Kolla-Ansible lab down cleanly, bring it back, and fix only what is actually broken.
 
-This guide is for the current lab paths:
+This is the only recovery guide for this lab. The older `openstack-from-zero` guide describes a different deployment — do not run its scripts here.
 
-- Management VM: `r2d2`
-- Kolla virtual environment: `$HOME/.venvs/kolla-fresh`
-- Kolla configuration: `$HOME/openstack-fresh/kolla`
-- Kolla inventory: `$HOME/openstack-fresh/kolla/multinode`
-- API VIP: `192.168.0.150`
-- Nodes: `node1`, `node2`, `node3`
+## Lab facts
 
-This guide is adapted to the current fresh-lab paths. The earlier [openstack-from-zero recovery guide](https://github.com/DinosaurKeys/openstack-from-zero/blob/main/docs/reboot-and-recovery.md) describes a different deployment; do not run its scripts unchanged here.
+| Item | Value |
+|---|---|
+| Management VM | `r2d2` |
+| Kolla venv | `$HOME/.venvs/kolla-fresh` |
+| Kolla config | `$HOME/openstack-fresh/kolla` |
+| Inventory | `$HOME/openstack-fresh/kolla/multinode` |
+| API VIP | `192.168.0.150` |
+| Nodes | `node1` (.200), `node2` (.201), `node3` (.202) |
+| OpenStack cloud | `kolla-admin` |
 
-## Quick recovery path
+### Service ports (memorise these)
 
-1. Power on the nodes and check SSH and Docker (Section 3A).
-2. Check Galera (Section 4B). If it is healthy, **do not recover it**. If all members have lost the Primary component, follow the decision and recovery steps in Sections 4C–4D.
-3. Check RabbitMQ membership and each application (Sections 5 and 5A). A stopped application and a repeatedly restarting container require different actions. Do not repeat `start_app` when the container is cycling.
-4. Check the API, Placement, and service heartbeats (Section 5B). Do not call the cloud healthy until the database, broker, and required services pass separately.
+| Service | Port | Healthy |
+|---|---|---|
+| Keystone | 5000 | `300` |
+| Glance | 9292 | `300` |
+| Nova API | 8774 | `200` |
+| Neutron | 9696 | `200` |
+| **Placement** | **8780** | `200` |
+| Horizon | 80 | `302` |
 
-**Current known limitation:** this guide does not yet provide a verified one-command repair for a RabbitMQ quorum-queue log recovery timeout. Preserve the broker data and investigate that specific failure; do not delete its volume or reset the cluster as a shortcut.
+> **Placement is 8780, not 8778.** Probing 8778 always returns `000` — that is not a failure.
+
+## TL;DR — is the lab healthy?
+
+```bash
+for p in 5000 9292 8774 9696 8780 80; do printf "%s: " $p; curl -s -o /dev/null -m6 -w '%{http_code}\n' http://192.168.0.150:$p/; done
+```
+
+All `200`/`300`/`302` → healthy. Anything else → work down the check ladder in Part 2, fix the first failure, run this again.
+
+## Symptom → action
+
+| Symptom | Action |
+|---|---|
+| A node does not ping | Console access. Host is down. |
+| VIP on zero nodes, or on two | Keepalived/HAProxy problem — Part 2, Layer 2. |
+| API returns `000` or `503` | Service is not listening. Check the container and its dependencies. |
+| API returns `500` but container says `healthy` | **Stale worker.** Restart that one service. Part 3. |
+| Placement 500, Nova 503, Neutron 503 | Typical after a reboot where the DB came up late. Part 3. |
+| `systemctl` says `active`, API still 500 | Same stale-worker case. `systemctl` is not proof. |
+| RabbitMQ container cycling | Stop and read the log. Do not loop `start_app`. Part 3C. |
+| Cinder check "fails" | Cinder is not deployed here. Expected. |
 
 ## Safety rules
 
-1. **Health checks come first.** A failed port check, `502`, `starting` container or unavailable API is a symptom, not automatic proof that recovery is required.
-2. **A reboot does not automatically require recovery.** Allow the hosts and containers time to start, then verify the API, MariaDB/Galera, RabbitMQ and service heartbeats.
-3. **Do not run `kolla-genpwd` after deployment.** It can change service credentials and make the deployed cloud inconsistent.
-4. **Do not restart MariaDB or RabbitMQ with a generic service restart.** Database and broker recovery require cluster-specific evidence.
-5. **A restart is a change.** Obtain approval for the exact node and service, check dependencies first, and verify the result afterward.
-6. Never paste passwords, tokens, private keys, `clouds.yaml`, or unredacted logs into chat or Git.
+1. **Health checks first.** A failed port check is a symptom, not proof recovery is needed.
+2. **A reboot does not require recovery.** Give the hosts time to settle, then verify.
+3. **Never run `kolla-genpwd` after deployment.** It changes credentials.
+4. **Never restart MariaDB, RabbitMQ, ProxySQL, HAProxy or Keepalived generically.** They need cluster-specific evidence.
+5. **A restart is a change.** Approve the exact node and service, check dependencies, verify after.
+6. **Never paste passwords, tokens, keys, `clouds.yaml` or unredacted logs into chat or Git.**
 
-For this deployment, the verified OpenStack client cloud is `kolla-admin`, using the user-readable configuration at `$HOME/.config/openstack/clouds.yaml`. The examples set this explicitly so they do not depend on inherited shell state. This lab also has verified passwordless Ansible become; the examples therefore omit `-K`. If become fails on another host, rerun that specific command with `-K` in a visible interactive terminal.
+The golden rule: **if a service started before the database was writable, restart it — it will never fix itself.**
 
-## 0. Start on the management VM
-
-Run this in a new R2D2 terminal:
+## Session setup (run once per terminal)
 
 ```bash
 export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
@@ -44,456 +70,300 @@ export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
 source "$KOLLA_VENV/bin/activate"
 export OS_CLOUD=kolla-admin
 export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
-
-command -v kolla-ansible
-command -v ansible-playbook
-hostname
 ```
 
-**Pass when:** the prompt is on R2D2, both executables resolve inside `$KOLLA_VENV/bin/`, and the inventory path is the current fresh inventory.
+Every command below assumes this block has run. Passwordless sudo is configured, so no `-K` is needed. If become fails, stop.
 
-**Stop if:** the virtual environment, inventory or target host is wrong.
+---
 
-## 1. Before a planned shutdown
+# Part 1 — Planned shutdown
 
-A whole-node shutdown is a cloud outage. Complete these checks before requesting or scheduling poweroff.
+A whole-lab shutdown is an outage. Complete all three steps first.
 
-### 1A — Record workloads and storage
+## 1.1 Record workloads
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-export OS_CLOUD=kolla-admin
-export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
-
 openstack server list --all-projects -c ID -c Name -c Status
 openstack volume list --all-projects -c ID -c Name -c Status 2>/dev/null || true
 ```
 
-Record the workloads that must be restored. Shut down guest operating systems through the normal guest method before the host shutdown. A VM in `SHUTOFF` does not by itself prove that guest filesystems or attached storage were cleanly quiesced.
+Shut guest OSes down properly first. `SHUTOFF` alone does not prove filesystems were quiesced.
 
-**Stop if:** the API is unavailable, a workload is still active, a volume operation is in progress, or backup and rollback coverage is unknown.
+**Stop if:** the API is down, a volume operation is in flight, or backup coverage is unknown.
 
-### 1B — Verify console access and exact shutdown targets
+## 1.2 Confirm the shutdown targets
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
 ansible -i "$KOLLA_INVENTORY" 'control:network:compute:storage' --list-hosts
 ```
 
-The output must contain only the physical OpenStack nodes intended for shutdown. The management VM must not appear in the target list.
+The list must contain only the three OpenStack nodes. **`r2d2` must not appear.**
 
-**Stop if:** an unexpected host appears, an intended node is missing, or console/out-of-band access is unavailable.
+**Stop if:** an unexpected host appears, a node is missing, or console access is unavailable.
 
-### 1C — Run a baseline health check
+## 1.3 Baseline health check
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-export OS_CLOUD=kolla-admin
-export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
-
 openstack token issue -f value -c expires
 openstack compute service list
 openstack network agent list
 ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.ping -e '{"ansible_become": false}'
 ```
 
-Record the expected service and agent rows before shutdown. This is a baseline, not proof that every guest, storage backend or cluster is healthy.
+Record the expected rows. This is a baseline, not proof that every guest and storage backend is healthy.
 
-## 2. Planned shutdown
+## 1.4 Schedule the shutdown
 
-There is no verified dependency-ordered whole-cloud shutdown in this guide. The following is a **higher-risk operating-system shutdown fallback**. Use it only after Section 1 passes and after approval for the outage.
-
-Preview the targets again immediately before the command:
+Re-run the target list from 1.2 immediately before this command. Then:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible -i "$KOLLA_INVENTORY" 'control:network:compute:storage' --list-hosts
-```
-
-Then schedule a five-minute shutdown on the reviewed physical nodes:
-
-```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
 ansible -i "$KOLLA_INVENTORY" 'control:network:compute:storage' \
-  -b -m ansible.builtin.command \
-  -a '/sbin/shutdown -h +5'
+  -b -m ansible.builtin.command -a '/sbin/shutdown -h +5'
 ```
 
-`CHANGED` means that shutdown was scheduled; it does not mean the host is already powered off. Verify the physical state through the console or out-of-band system. Do not remove power while a host is still shutting down.
+`CHANGED` means the shutdown was *scheduled*, not that the host is off. Confirm the physical state on the console. Never cut power while a host is shutting down.
 
-If the target review or shutdown result is wrong, try to cancel the scheduled shutdown on the same reviewed targets:
+To cancel on the same reviewed targets:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
 ansible -i "$KOLLA_INVENTORY" 'control:network:compute:storage' \
-  -b -m ansible.builtin.command \
-  -a '/sbin/shutdown -c'
+  -b -m ansible.builtin.command -a '/sbin/shutdown -c'
 ```
 
-Cancellation cannot reach a host that is already stopped or disconnected. Treat uncertain results as a stop condition.
+Cancellation cannot reach a host that is already down. Treat an uncertain result as a stop condition.
 
-## 3. After powering on the nodes
+---
 
-Power on the physical nodes through their console or approved out-of-band system. Leave R2D2 running. Do not start recovery immediately.
+# Part 2 — Power-on and the check ladder
 
-### 3A — Wait for SSH and basic host readiness
+Power the nodes on via console. Leave `r2d2` running. **Do not start repairing immediately.**
+
+Work top to bottom. **Stop at the first red layer.** Never fix a lower layer while an upper one is broken.
+
+## Layer 1 — Hosts reachable
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.ping \
-  -e '{"ansible_become": false}'
-
-ansible -i "$KOLLA_INVENTORY" control -b \
-  -m ansible.builtin.command -a 'systemctl is-active docker'
-
-ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.command \
-  -a 'ip -brief address show mgmt0'
+ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.ping -e '{"ansible_become": false}'
+ansible -i "$KOLLA_INVENTORY" control -b -m ansible.builtin.command -a 'systemctl is-active docker'
+ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.command -a 'ip -brief address show mgmt0'
 ```
 
-**Pass when:** all three nodes respond, Docker is active, and each node has its expected management address.
+**Pass:** 3/3 respond, Docker active, `mgmt0` addresses correct.
+**Fail:** a node is unreachable or Docker is inactive → console access.
 
-**Stop if:** any node is unreachable, Docker is inactive, or the management interface/address is wrong.
-
-### 3B — Inspect containers without restarting anything
+## Layer 2 — VIP owned by exactly one node
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible -i "$KOLLA_INVENTORY" control -b \
-  -m ansible.builtin.command -a 'docker ps --all --no-trunc'
+for h in 200 201 202; do printf "node: "; ssh joe@192.168.0.$h 'ip -4 -o addr show | grep -c 192.168.0.150'; done
 ```
 
-Allow normal startup time. Containers in `starting` state may become healthy. Do not interpret a single early status as a database failure.
+**Pass:** exactly one `1`.
+**Fail:** zero everywhere → VIP lost. Two → split brain. Do not restart HAProxy/Keepalived until you know which.
 
-### 3C — Run the Kolla readiness gate
+## Layer 3 — Containers (inspect only, restart nothing)
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-export ANSIBLE_BECOME_ASK_PASS=false
-
-kolla-ansible prechecks \
-  -i "$KOLLA_INVENTORY" \
-  --use-test-images
+ansible -i "$KOLLA_INVENTORY" control -b -m ansible.builtin.command -a 'docker ps --all --no-trunc'
 ```
 
-A passing precheck is a readiness result. It is not proof that the API, database cluster, broker cluster, workloads or guest connectivity are healthy. This is a full Kolla precheck and may take several minutes on this lab; wait for its final `PLAY RECAP` instead of treating an active terminal as success.
+Allow startup time. `starting` is normal early on. Ignore containers with no healthcheck by design: `keepalived`, `fluentd`, `cron`, `kolla_toolbox`, `neutron_metadata_agent`, dhcp agents.
 
-### 3D — Verify API and service heartbeats
-
-Use the actual cloud name from the protected local `clouds.yaml`; do not print credentials or tokens.
+**The real signal is the restart count:**
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-export OS_CLOUD=kolla-admin
-export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
-
-openstack token issue -f value -c expires
-openstack compute service list
-openstack network agent list
+ansible -i "$KOLLA_INVENTORY" control -b -m ansible.builtin.command \
+  -a 'docker inspect --format "{{.Name}} {{.RestartCount}}" $(docker ps -aq)'
 ```
 
-**Pass when:** Keystone authentication succeeds, expected compute services are `up` and `enabled`, and expected network agents report alive. Continue to the database and broker checks below.
+A climbing count = crash loop. A `healthy` label means nothing on its own.
 
-**If this check fails:** record the failure and continue to Sections 4 and 5 to check Galera and RabbitMQ. An unavailable API can be a consequence of an unhealthy dependency; do not repeat this API check instead of diagnosing the dependency. Do not count intentionally disabled services as required.
-
-## 4. MariaDB/Galera decision after reboot
-
-A MariaDB port timeout or HTTP `502` is only a symptom. Check every configured MariaDB member before selecting recovery.
-
-### 4A — Check containers and port state
+## Layer 4 — Database (Galera) — check before anything else
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible-inventory -i "$KOLLA_INVENTORY" --graph mariadb
-ansible -i "$KOLLA_INVENTORY" mariadb -b \
-  -m ansible.builtin.command -a 'docker ps --all --filter name=mariadb'
-ansible -i "$KOLLA_INVENTORY" mariadb \
-  -m ansible.builtin.shell -a "ss -ltn | grep ':3306 ' || true" \
-  -e '{"ansible_become": false}'
+ansible -i "$KOLLA_INVENTORY" mariadb -b -m ansible.builtin.command \
+  -a 'docker ps --all --filter name=mariadb'
 ```
 
-If containers are still starting, wait and repeat the checks. Do not run recovery just because the first ten-second liveness check failed.
-
-### 4B — Check Galera state on every member
-
-Only run this read-only check after the MariaDB container exists:
+Then read the cluster state on every member:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible -i "$KOLLA_INVENTORY" mariadb -b \
-  -m ansible.builtin.command \
+ansible -i "$KOLLA_INVENTORY" mariadb -b -m ansible.builtin.command \
   -a "docker exec mariadb mariadb --defaults-file=/etc/mysql/healthcheck.cnf --batch --skip-column-names -e \"SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_status','wsrep_cluster_size','wsrep_local_state_comment','wsrep_ready','wsrep_connected','wsrep_cluster_state_uuid','wsrep_incoming_addresses')\""
 ```
 
-For a single-shard three-node cluster, the expected state is generally:
+**Pass:** all members `Primary`, `Synced`, `ready=ON`, `connected=ON`, same non-empty UUID, size = 3.
 
-- `wsrep_cluster_status`: `Primary`
-- `wsrep_local_state_comment`: `Synced`
-- `wsrep_ready`: `ON`
-- `wsrep_connected`: `ON`
-- Same non-empty cluster UUID on every member
-- Cluster size equal to the configured MariaDB member count
-
-The samples are sequential, not atomic. If a member is missing, unreachable, inconsistent, or the result is unclear, stop.
-
-### 4C — Decide whether recovery is required
-
-| Observed state | Action |
-|---|---|
-| All members are `Primary`, `Synced`, ready and connected | Do not run recovery. Continue with API, RabbitMQ and workload checks. |
-| Containers are starting but ports and health become ready | Wait and recheck. Do not recover. |
-| A Primary component may still exist, or member state is uncertain | Do not recover. Investigate every member first. |
-| All configured members are reachable, no Primary survives, and the complete outage is confirmed | Review backups, impact and rollback; obtain approval before recovery. |
-| A member is missing, logs are stale, shards disagree, or data state is unclear | Stop. Recovery is not justified by the available evidence. |
-
-### 4D — Coordinated MariaDB recovery
-
-This is a change, not a health check. Run only after confirming a complete MariaDB cluster outage, reviewing backups and obtaining approval for this exact action:
+Then confirm it is actually **writable** — this is the check that matters:
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-export ANSIBLE_BECOME_ASK_PASS=false
-export ANSIBLE_DISPLAY_SKIPPED_HOSTS=false
-
-kolla-ansible mariadb-recovery \
-  -b \
-  -i "$KOLLA_INVENTORY" \
-  --configdir "$KOLLA_CONFIG_PATH" \
-  --passwords "$KOLLA_CONFIG_PATH/passwords.yml"
+for h in 200 201 202; do ssh joe@192.168.0.$h 'sudo docker exec placement_api timeout 4 bash -c "cat </dev/null >/dev/tcp/192.168.0.150/3306" && echo "DB OK" || echo "DB FAIL"'; done
 ```
 
-The current lab uses passwordless sudo, so this command does not prompt. If become fails, stop; Kolla-Ansible does not accept Ansible's `-K` option. When supported by the installed release, use `ANSIBLE_BECOME_ASK_PASS=true` with a visible terminal prompt instead of the `false` setting above. Never put the password in the guide or chat. Stop on any recovery failure. Do not repeatedly run recovery and do not manually edit `grastate.dat`, delete database volumes, select a bootstrap node, or restart all MariaDB containers independently.
+### Recovery decision
 
-After a successful recovery recap, repeat Section 4B, then check RabbitMQ in Section 5 and the APIs and service heartbeats in Section 5B. Recovery is not complete until the required dependencies and APIs are healthy.
+| Observed | Action |
+|---|---|
+| All `Primary`/`Synced`/ready/connected | **Do not recover.** Go to Layer 5. |
+| Containers starting, ports becoming ready | Wait and recheck. Do not recover. |
+| A Primary may still exist, or state is unclear | Do not recover. Investigate every member. |
+| All members reachable, no Primary, outage confirmed | Backups + approval first, then `kolla-ansible mariadb-recovery`. |
+| A member missing, stale logs, shards disagree | **Stop.** Evidence does not justify recovery. |
 
-## 5. RabbitMQ check after reboot
-
-A listening broker port does not prove cluster membership or absence of alarms.
+Only after a confirmed complete outage, reviewed backups and explicit approval:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
+kolla-ansible mariadb-recovery -b -i "$KOLLA_INVENTORY" \
+  --configdir "$KOLLA_CONFIG_PATH" --passwords "$KOLLA_CONFIG_PATH/passwords.yml"
+```
 
-ansible -i "$KOLLA_INVENTORY" rabbitmq -b \
-  -m ansible.builtin.command \
+Never edit `grastate.dat`, delete volumes, hand-pick a bootstrap node, or restart all MariaDB containers independently. Stop on any failure and do not re-run recovery.
+
+## Layer 5 — RabbitMQ (2/3 quorum is enough to run)
+
+```bash
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
   -a 'docker exec rabbitmq rabbitmq-diagnostics -q cluster_status'
 ```
 
-Compare the running members with the `rabbitmq` inventory group. Stop if members are missing, alarms are present, or a network partition is reported. Do not use a generic RabbitMQ restart as a substitute for cluster diagnosis.
+**Pass:** members match inventory, no alarms, no partitions. A port being open proves nothing.
 
-### 5A — Verify the RabbitMQ application, not only its container
-
-A running Docker container or active systemd unit does not prove that the RabbitMQ application is running inside the container. Check every RabbitMQ member:
+Then check the **application**, not the container:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-ansible -i "$KOLLA_INVENTORY" rabbitmq -b \
-  -m ansible.builtin.command \
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
   -a 'docker exec rabbitmq rabbitmq-diagnostics -q check_running'
 ```
 
-**Pass when:** every expected member reports that RabbitMQ is fully booted and running.
-
-**Stop if:** a member reports that the `rabbit` application is not running. First distinguish a stable container with a stopped application from a container that is repeatedly restarting. On R2D2, sample the state and systemd restart counter twice, 90 seconds apart:
+**Pass:** every member reports "fully booted and running".
+**Fail:** a member reports the app is not running → distinguish *stopped* from *cycling*:
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_INVENTORY="$HOME/openstack-fresh/kolla/multinode"
-source "$KOLLA_VENV/bin/activate"
-
 ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
   -a 'docker ps -a --filter name=^/rabbitmq$'
 ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
   -a 'systemctl show kolla-rabbitmq-container.service -p ActiveState -p SubState -p NRestarts'
 sleep 90
-ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
-  -a 'docker ps -a --filter name=^/rabbitmq$'
-ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
-  -a 'systemctl show kolla-rabbitmq-container.service -p ActiveState -p SubState -p NRestarts'
+# repeat both commands and compare NRestarts
 ```
 
-An increasing `NRestarts` indicates a restart loop. A counter that does not increase in 90 seconds does not prove long-term stability; compare it over the actual observed restart interval. If the container is cycling, inspect the affected node's RabbitMQ application log and systemd events; do **not** repeat `start_app`, reset the node, or delete its volume. Logs can contain secrets; do not publish them. If the log shows a quorum-queue WAL/segment-writer timeout, the cause and safe remedy must be established before changing broker data.
-
-Only if the container is stable and the Rabbit application is stopped, review `cluster_status`, alarms, partitions and the impact first. With approval for the exact affected node, the targeted action may be:
+- **NRestarts rising** → crash loop. Read the log. Do **not** loop `start_app`, reset the node or delete the volume.
+- **Stable container, app stopped** → review `cluster_status`, alarms and impact first. With approval for that exact node only:
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_INVENTORY="$HOME/openstack-fresh/kolla/multinode"
-source "$KOLLA_VENV/bin/activate"
-
-ansible -i "$KOLLA_INVENTORY" node2 -b \
-  -m ansible.builtin.command \
+ansible -i "$KOLLA_INVENTORY" node2 -b -m ansible.builtin.command \
   -a 'docker exec rabbitmq rabbitmqctl start_app'
 ```
 
-Replace `node2` only with the verified affected inventory alias. A successful command is not recovery: recheck container stability, `check_running`, and `cluster_status` on all members. If the container exits or the application stops again, stop and investigate; do not repeat the command.
+Replace `node2` only with the verified alias. Then recheck stability, `check_running` and `cluster_status`. If it stops again, stop and investigate — do not repeat.
 
-### 5B — Recheck Placement and dependent API health
+**Known limitation:** a quorum-queue WAL/segment-writer timeout has no verified one-command repair here. Preserve the broker data; never delete the volume or reset the cluster as a shortcut. With 2/3 members running and no alarms, the cloud works — leave the stuck member alone until you have evidence.
 
-Run this after Galera and RabbitMQ are healthy. It detects services that started while a dependency was unavailable and remained unhealthy after the dependency recovered.
+## Layer 6 — APIs and service heartbeats
 
 ```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-source "$KOLLA_VENV/bin/activate"
-
-ansible -i "$KOLLA_INVENTORY" control -b \
-  -m ansible.builtin.command \
-  -a 'docker ps --all --filter name=placement_api --no-trunc'
-
-for endpoint in \
-  http://192.168.0.150:8780/ \
-  http://192.168.0.200:8780/ \
-  http://192.168.0.201:8780/ \
-  http://192.168.0.202:8780/; do
-  curl --silent --show-error --output /dev/null \
-    --write-out "$endpoint %{http_code}\n" --max-time 10 "$endpoint"
-done
-
-export OS_CLOUD=kolla-admin
-export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
+for p in 5000 9292 8774 9696 8780 80; do printf "%s: " $p; curl -s -o /dev/null -m6 -w '%{http_code}\n' http://192.168.0.150:$p/; done
+for ip in 200 201 202; do printf "node %s 8780: " $ip; curl -s -o /dev/null -m6 -w '%{http_code}\n' http://192.168.0.$ip:8780/; done
 openstack compute service list
 openstack network agent list
 ```
 
-**Pass when:** every Placement backend and the VIP return HTTP 200, the Placement containers report healthy, all expected Nova services are `up` and `enabled`, and all expected Neutron agents report alive.
+**Pass:** all endpoints `200`/`300`/`302`, every Placement backend `200`, all Nova services `up`+`enabled`, all network agents alive.
 
-**Stop if:** any Placement backend returns 500/503, a Placement container is unhealthy, or a Nova/Neutron heartbeat is down. If Galera and RabbitMQ already pass, restart only the affected Placement API node(s) one at a time using Section 6, then repeat this check. Do not restart all OpenStack services as a group.
+**Fail:** a `500` from a container that reports `healthy` means **stale workers** — restart that service (Part 3). Do not re-run the API check instead of diagnosing the dependency.
 
-## 6. Restart one individual service
+---
 
-Use this procedure only when a specific service is affected and its dependencies and remaining replicas have been reviewed.
+# Part 3 — Repair
 
-### 6A — Identify the exact service and node
+## 3A — Restart one service
 
-From the management VM, check the API heartbeat first:
-
-```bash
-export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
-source "$KOLLA_VENV/bin/activate"
-export OS_CLOUD=kolla-admin
-export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
-
-openstack compute service list
-openstack network agent list
-```
-
-Then set the reviewed inventory alias and Kolla systemd unit. Do not type `NODE_ALIAS` literally:
+Verify the unit exists first:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
 NODE_ALIAS=node1
-SERVICE_UNIT=kolla-neutron_openvswitch_agent-container.service
-
-ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b \
-  -m ansible.builtin.command \
+SERVICE_UNIT=kolla-placement_api-container.service
+ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b -m ansible.builtin.command \
   -a "systemctl show $SERVICE_UNIT -p LoadState -p ActiveState -p SubState"
 ```
 
-Confirm that the unit exists and that the selected container is present before requesting a restart.
+Then, with approval for that exact node and unit:
 
-Common service-to-unit examples:
+```bash
+ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b -m ansible.builtin.command \
+  -a "systemctl restart $SERVICE_UNIT"
+```
 
-| Service | Kolla systemd unit |
+If the unit hit its start limit: `systemctl reset-failed $SERVICE_UNIT` first.
+
+Then verify — a successful restart only proves systemd accepted it:
+
+```bash
+ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b -m ansible.builtin.command \
+  -a "systemctl show $SERVICE_UNIT -p ActiveState -p SubState -p NRestarts"
+```
+
+Follow with the matching endpoint check from Layer 6.
+
+### Unit names
+
+| Service | Unit |
 |---|---|
 | Nova compute | `kolla-nova_compute-container.service` |
 | Nova API | `kolla-nova_api-container.service` |
 | Nova conductor | `kolla-nova_conductor-container.service` |
+| Nova scheduler | `kolla-nova_scheduler-container.service` |
 | Placement API | `kolla-placement_api-container.service` |
-| Neutron Open vSwitch agent | `kolla-neutron_openvswitch_agent-container.service` |
+| Neutron server | `kolla-neutron_server-container.service` |
+| Neutron OVS agent | `kolla-neutron_openvswitch_agent-container.service` |
 | Neutron L3 agent | `kolla-neutron_l3_agent-container.service` |
 | Neutron DHCP agent | `kolla-neutron_dhcp_agent-container.service` |
 | Neutron metadata agent | `kolla-neutron_metadata_agent-container.service` |
 | Horizon | `kolla-horizon-container.service` |
 | HAProxy | `kolla-haproxy-container.service` |
 
-Unit names can differ when services are not enabled or the installed Kolla release changes. Verify the exact unit on the target node.
+Unit names change between Kolla releases. Always verify on the target node.
 
-### 6B — Restart only the approved service
+## 3B — The stale-worker fix (most common post-reboot fault)
 
-A restart interrupts the selected service and can start a stopped unit. Run only after approval for the exact `NODE_ALIAS` and `SERVICE_UNIT`:
-
-```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-NODE_ALIAS=node1
-SERVICE_UNIT=kolla-neutron_openvswitch_agent-container.service
-
-ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b \
-  -m ansible.builtin.command \
-  -a "systemctl restart $SERVICE_UNIT"
-```
-
-Do **not** use this generic procedure for MariaDB or RabbitMQ. Use Sections 4 and 5 instead.
-
-### 6C — Verify the restart
+If the hosts booted before MariaDB was writable, these containers keep serving `500` while `systemctl` says `active` and Docker says `healthy`. Restart them, one node at a time:
 
 ```bash
-export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
-export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
-
-NODE_ALIAS=node1
-SERVICE_UNIT=kolla-neutron_openvswitch_agent-container.service
-
-ansible -i "$KOLLA_INVENTORY" "$NODE_ALIAS" -b \
-  -m ansible.builtin.command \
-  -a "systemctl show $SERVICE_UNIT -p LoadState -p ActiveState -p SubState"
+for u in placement_api nova_api nova_conductor nova_scheduler neutron_server; do
+  for h in 200 201 202; do
+    ssh joe@192.168.0.$h "sudo systemctl reset-failed kolla-${u}-container.service 2>/dev/null; sudo systemctl restart kolla-${u}-container.service"
+  done
+done
 ```
 
-Then repeat the relevant API heartbeat check and inspect the selected container. A successful `systemctl restart` only proves that systemd accepted the request; it does not prove application health.
+Then re-run Layer 6. Conductor and scheduler may be in a restart loop (`NRestarts` in the hundreds) — `reset-failed` clears the limit so they can start.
 
-## 7. Recovery completion checklist
+## 3C — Run the Kolla readiness gate
 
-Recovery is complete only when all applicable checks pass:
+```bash
+kolla-ansible prechecks -i "$KOLLA_INVENTORY" --use-test-images
+```
 
-- [ ] All intended nodes respond to Ansible.
-- [ ] `mgmt0` has the expected address on every node.
-- [ ] Docker is active on every node.
-- [ ] Expected Kolla containers are running and healthy.
-- [ ] `kolla-ansible prechecks` passes.
-- [ ] Keystone authentication succeeds.
-- [ ] MariaDB members are `Primary`, `Synced`, ready and connected.
-- [ ] RabbitMQ members match inventory with no alarms or partitions, and the RabbitMQ application is running on every member.
-- [ ] Placement VIP and every expected Placement backend return HTTP 200.
-- [ ] Compute services report `up` and `enabled`.
-- [ ] Network agents report alive and enabled.
-- [ ] Horizon/API VIP responds if Horizon is enabled.
-- [ ] Previously recorded workloads are restored only after the control plane and dependencies are healthy.
+Wait for the final `PLAY RECAP`. A passing precheck is a readiness result, not proof of cloud health. It takes several minutes on this lab.
 
-A passing container check, API check or systemd check alone is not end-to-end cloud health.
+---
+
+# Part 4 — Completion checklist
+
+Recovery is complete only when all of these pass:
+
+- [ ] 3/3 nodes respond to Ansible
+- [ ] `mgmt0` has the expected address on every node
+- [ ] Docker is active on every node
+- [ ] VIP is on exactly one node
+- [ ] MariaDB 3/3 `Primary`, `Synced`, ready, connected
+- [ ] DB is writable via VIP:3306
+- [ ] RabbitMQ members match inventory, no alarms, no partitions, app running
+- [ ] Placement VIP and all backends return `200`
+- [ ] Nova API `200`, all Nova services `up` + `enabled`
+- [ ] Neutron `200`, all network agents alive
+- [ ] Horizon responds if enabled
+- [ ] `kolla-ansible prechecks` passes
+- [ ] Workloads restored only after the control plane is healthy
+- [ ] Guest boot, storage and network tested separately — untested means untested
+
+A passing container, API or systemd check alone is not end-to-end cloud health.
