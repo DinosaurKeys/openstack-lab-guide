@@ -368,6 +368,8 @@ grep -E '  cirros-0\.6\.3-x86_64-disk\.img$' cirros-0.6.3-SHA256SUMS | sha256sum
 
 ### Step 10D: Create or reuse the private network
 
+> **Do not run this section yet if Step 10B failed or was skipped.** An error such as `Missing value auth-url required for auth plugin password` means the OpenStack client context is not loaded; return to Step 10B and make `openstack token issue -f value -c expires` succeed before any resource check or create command.
+
 Only use this fresh-resource path after Step 10B inspection confirms that the intended names do not already exist and that `10.254.211.0/24` does not overlap a connected VPN, routed network or existing subnet. If an object already exists, inspect and reuse it by ID only when it is compatible; do not run its create command again.
 
 Run **one resource command at a time**. After each successful create, record the returned ID, set the variable, and verify the object before continuing. Do not paste the entire sequence into one shell block.
