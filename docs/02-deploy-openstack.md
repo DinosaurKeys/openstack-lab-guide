@@ -337,4 +337,56 @@ grep -nE '^[[:space:]]*enable_heat[[:space:]]*:' "$KOLLA_CONFIG_PATH/globals.yml
 
 **Pass when:** exactly one active line says `enable_heat: false`. Deploy normally only after the previous checks pass. Heat APIs and stack orchestration will not be available.
 
-**Already deployed?** Changing this setting alone does not stop or remove existing Heat containers, stacks, endpoints, or RabbitMQ queues. Inspect the deployed services and use a separately reviewed, approved removal plan; do not run the fresh-install procedure against an existing cloud. For queue inspection and carefully targeted deletion, see [RabbitMQ queue cleanup](RABBITMQ-QUEUE-CLEANUP.md).
+## Disable Heat persistently on an existing lab
+
+Use this only when Heat is intentionally not used. `enable_heat: false` prevents future Kolla configuration from enabling Heat, but it does **not** automatically stop existing systemd units; those enabled units would otherwise start at the next reboot. This procedure disables Heat immediately and at boot without rebooting the cloud. It does not delete existing Heat stacks, endpoints, databases, or RabbitMQ queues.
+
+On R2D2, set exactly one active Heat setting. The command updates the one existing commented or active `enable_heat:` line and stops if the file contains an unexpected number of matching lines:
+
+```bash
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+
+python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+path = Path(os.environ["KOLLA_CONFIG_PATH"]) / "globals.yml"
+text = path.read_text(encoding="utf-8")
+pattern = r"(?m)^[ \t]*#?[ \t]*enable_heat:[^\n]*$"
+matches = list(re.finditer(pattern, text))
+if len(matches) != 1:
+    raise SystemExit(f"STOP: expected one enable_heat line, found {len(matches)}")
+path.write_text(text[:matches[0].start()] + "enable_heat: false" + text[matches[0].end():], encoding="utf-8")
+print(f"updated {path}")
+PY
+
+grep -nE '^[[:space:]]*enable_heat[[:space:]]*:' "$KOLLA_CONFIG_PATH/globals.yml"
+```
+
+**Pass when:** the final command prints exactly one line: `enable_heat: false`. Then disable and stop the three verified Heat units on all three control nodes using the Kolla inventory:
+
+```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
+export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
+source "$KOLLA_VENV/bin/activate"
+
+for unit in heat_engine heat_api heat_api_cfn; do
+  ansible -i "$KOLLA_INVENTORY" control -b \
+    -m ansible.builtin.systemd \
+    -a "name=kolla-${unit}-container.service enabled=false state=stopped"
+done
+```
+
+Verify the units now and at the next reboot boundary:
+
+```bash
+for unit in heat_engine heat_api heat_api_cfn; do
+  ansible -i "$KOLLA_INVENTORY" control -b \
+    -m ansible.builtin.command \
+    -a "systemctl show kolla-${unit}-container.service -p UnitFileState -p ActiveState --no-pager"
+done
+```
+
+**Pass when:** every node reports `UnitFileState=disabled` and `ActiveState=inactive` for all three units. No reboot is required. If you later need Heat again, set `enable_heat: true`, then run the same loop with `enabled=true state=started`; validate the Heat APIs before using stacks. For queue inspection and removal, see [RabbitMQ queue cleanup](RABBITMQ-QUEUE-CLEANUP.md).
