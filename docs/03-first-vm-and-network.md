@@ -578,6 +578,14 @@ Before creating ingress rules, inspect the current list and reuse an exact exist
 
 ```bash
 guide_block_14() {
+if [ -z "${ACCESS_GROUP_ID:-}" ]; then
+  printf '%s\n' 'STOP: ACCESS_GROUP_ID is empty; run Step 10E Block 12 first.'
+  return 1
+fi
+if [ -z "${TRUSTED_CIDR:-}" ]; then
+  printf '%s\n' 'STOP: TRUSTED_CIDR is empty; run Block 13 first using a bare IPv4 address.'
+  return 1
+fi
 rule_id() {
   local protocol="$1" port="$2" rules_json
   rules_json="$(openstack security group rule list "$ACCESS_GROUP_ID" -f json)" || return 1
