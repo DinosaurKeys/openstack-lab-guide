@@ -407,7 +407,46 @@ fi
 unset -f guide_block_07
 ```
 
-**Pass when:** all inspection commands succeed, the network/subnet/flavor/image/VM names are absent, and any existing security group is explicitly identified for compatibility review. **Stop if:** any command fails or any non-security-group target already exists.
+**Fresh path pass when:** all inspection commands succeed, the network/subnet/flavor/image/VM names are absent, and any existing security group is explicitly identified for compatibility review. **If the check stops because the network, subnet, flavor, or image already exists, do not run A–D below.** Use the existing-resource path instead.
+
+#### Existing-resource path: verify and reuse compatible lab resources
+
+Use this path when Step 10D finds the named network, subnet, flavor, or image already exists. It makes no cloud changes; it confirms there is exactly one of each and places their IDs in this terminal for the later security-group and VM steps.
+
+```bash
+guide_block_07_reuse() {
+mapfile -t PRIVATE_NET_IDS < <(openstack network list --name lab-private -f value -c ID)
+mapfile -t PRIVATE_SUBNET_IDS < <(openstack subnet list --name lab-private-subnet -f value -c ID)
+FLAVORS_JSON="$(openstack flavor list -f json)" || return 1
+FLAVOR_ID="$(printf '%s\n' "$FLAVORS_JSON" | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); print("\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')" || return 1
+mapfile -t IMAGE_IDS < <(openstack image list --name lab-test-image -f value -c ID)
+
+if [ "${#PRIVATE_NET_IDS[@]}" -ne 1 ] || [ "${#PRIVATE_SUBNET_IDS[@]}" -ne 1 ] || [ "${#IMAGE_IDS[@]}" -ne 1 ]; then
+  printf 'STOP: expected one existing private network, subnet and image; got network=%s subnet=%s image=%s.\n' "${#PRIVATE_NET_IDS[@]}" "${#PRIVATE_SUBNET_IDS[@]}" "${#IMAGE_IDS[@]}"
+  return 1
+fi
+if [ "$(printf '%s\n' "$FLAVOR_ID" | sed '/^$/d' | wc -l)" -ne 1 ]; then
+  printf '%s\n' 'STOP: expected exactly one existing lab.tiny flavor.'
+  return 1
+fi
+
+PRIVATE_NET_ID="${PRIVATE_NET_IDS[0]}"
+PRIVATE_SUBNET_ID="${PRIVATE_SUBNET_IDS[0]}"
+IMAGE_ID="${IMAGE_IDS[0]}"
+openstack network show "$PRIVATE_NET_ID" -c id -c name -c status -c router:external -c subnets
+openstack subnet show "$PRIVATE_SUBNET_ID" -c id -c name -c network_id -c cidr -c enable_dhcp
+openstack flavor show "$FLAVOR_ID" -c id -c name -c vcpus -c ram -c disk
+openstack image show "$IMAGE_ID" -c id -c name -c status -c visibility
+printf 'Reusing PRIVATE_NET_ID, PRIVATE_SUBNET_ID, FLAVOR_ID and IMAGE_ID in this terminal.\n'
+}
+
+if ! guide_block_07_reuse; then
+  printf '%s\n' 'STOP: existing-resource reuse is not safe; the terminal is still open.'
+fi
+unset -f guide_block_07_reuse
+```
+
+**Pass when:** exactly one network, subnet, flavor and image are displayed, the network is `ACTIVE` and internal, the subnet is `10.254.211.0/24` with DHCP enabled, and the image is `active`. Continue at **E — Create and verify the dedicated security group**; skip A–D.
 
 **A — Create and verify the private network:**
 
@@ -491,7 +530,8 @@ A security group may already exist from an earlier attempt. Check before creatin
 
 ```bash
 guide_block_12() {
-GROUP_IDS_OUTPUT="$(openstack security group list --name lab-vm-access -f value -c ID)" || return 1
+SECURITY_GROUPS_JSON="$(openstack security group list -f json)" || return 1
+GROUP_IDS_OUTPUT="$(printf '%s\n' "$SECURITY_GROUPS_JSON" | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')" || return 1
 GROUP_IDS=()
 if [ -n "$GROUP_IDS_OUTPUT" ]; then
   mapfile -t GROUP_IDS <<< "$GROUP_IDS_OUTPUT"
