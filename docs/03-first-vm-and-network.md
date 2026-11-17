@@ -680,6 +680,8 @@ unset -f guide_block_15
 
 ## Step 11: Give the VM a floating IP
 
+> **Prerequisite — stop here unless Step 10E is complete:** you must have one `ACTIVE` test VM and have recorded its `VM_ID`, `VM_PORT`, `FIXED_IP`, and `PRIVATE_SUBNET_ID`; do not create a router, attach a router interface, allocate a floating IP, or add provider-side security rules before that checkpoint.
+
 ### Step 11A: Check the provider-network plan
 
 This path creates a flat external provider network, dedicated router and floating IP; it does **not** reconfigure switches, node interfaces or DHCP. Verify the existing Kolla/Neutron mapping `physnet1:br-ex`, the `provider0` uplink, switch/VLAN and upstream path on the actual hosts before proceeding. A link-up indication alone does not prove that the upstream network works. The external LAN is `192.168.0.0/24`, gateway `192.168.0.1`, and Neutron pool `192.168.0.151–192.168.0.199`. Joe has confirmed that pool is excluded from DHCP; the VIP `.150` is excluded and nodes `.200–.202` are outside the pool. Confirm the pool is also clear of **all** static assignments, current allocations and other Neutron networks with the LAN administrator and the relevant DHCP/IPAM records before assignment; an unanswered ping does not establish availability. The router gateway and floating IP each consume a pool address.
