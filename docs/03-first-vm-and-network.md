@@ -15,6 +15,8 @@ Run this chapter on **R2D2** only after Step 9 has deployed and validated the cl
 
 > **Private working draft:** The addresses below describe this lab and must be sanitized before publication. Running these steps creates cloud resources; writing this guide did not change the cloud. Run OpenStack commands on the **management VM**, as your normal user, in one terminal. At the start of that terminal, run the Step 00 path contract and set the verified `OS_CLOUD` only after reading the generated cloud names without displaying credentials. Stop at each failed gate; never rerun a create command merely because it is slow. Record IDs and which objects you created in a private local record. Names are not necessarily unique: use IDs after checking them.
 
+> **Terminal safety:** A guide block that detects a `STOP` condition now returns only from its temporary function, then prints that the terminal remains open; it does not run `exit` against your R2D2 shell. IDs set by a successful block remain available to the next block.
+
 **Topology — illustration only; DO NOT TYPE**
 
 ![Floating IP and outbound network paths](../diagrams/floating-ip-flow.svg)
@@ -104,18 +106,25 @@ Run this subsection only when the destination client file is genuinely absent. I
 Run this one self-contained block only when the destination client file is genuinely absent. It does not apply to an already configured client:
 
 ```bash
+guide_block_01() {
 export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
 export KOLLA_CONFIG_PATH="$HOME/openstack-fresh/kolla"
 export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
 source "$KOLLA_VENV/bin/activate"
-command -v kolla-ansible >/dev/null || { printf '%s\n' 'STOP: kolla-ansible is not in the fresh environment.'; exit 1; }
+command -v kolla-ansible >/dev/null || { printf '%s\n' 'STOP: kolla-ansible is not in the fresh environment.'; return 1; }
 read -r -p 'Is passwordless sudo verified on all selected hosts? Type YES or NO: ' SUDO_MODE
 case "$SUDO_MODE" in
   YES) export ANSIBLE_BECOME_ASK_PASS=false ;;
   NO) export ANSIBLE_BECOME_ASK_PASS=true ;;
-  *) printf '%s\n' 'STOP: answer YES or NO.'; exit 1 ;;
+  *) printf '%s\n' 'STOP: answer YES or NO.'; return 1 ;;
 esac
 kolla-ansible post-deploy -i "$KOLLA_INVENTORY" --configdir "$KOLLA_CONFIG_PATH"
+}
+
+if ! guide_block_01; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_01
 ```
 
 Enter any sudo password only at the local prompt when the interactive mode is selected. Stop if post-deploy fails or its recap reports failed or unreachable hosts. The source and destination below contain credentials. Do not display them. On this fresh-install path, inspect both directory paths and create them **only when absent**. Stop if either path is a symlink, is not a directory, has an unexpected owner or permissions, or if any command fails:
@@ -193,13 +202,20 @@ openstack floating ip list
 **Existing deployment resume:** Check whether `lab-smoke` currently exists. A missing `lab-smoke` is the expected clean-build state; an existing match is a stop condition for the fresh path.
 
 ```bash
-VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || exit 1
+guide_block_02() {
+VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || return 1
 if [ -n "$VM_MATCHES" ]; then
   printf '%s\n' 'STOP: lab-smoke already exists; inspect it before choosing the existing-VM or new-VM path.'
   printf '%s\n' "$VM_MATCHES"
-  exit 1
+  return 1
 fi
 printf '%s\n' 'No lab-smoke VM exists; the fresh Step 10 path may continue.'
+}
+
+if ! guide_block_02; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_02
 ```
 
 **Pass when:** the list command succeeds and returns no server ID. **Stop if:** the command fails, more than one match is returned, or any `lab-smoke` VM exists. Do not delete an existing VM as part of the normal guide.
@@ -211,9 +227,10 @@ The historical VM observation at `10.254.211.204` is retained only as documentat
 The guest key must exist **before** the first boot. The local key is reusable across a Step 10 rerun; do not delete or regenerate it just because the cloud keypair was removed. Stop only when one file is missing, either path is a symlink, or the fingerprint check fails:
 
 ```bash
+guide_block_03() {
 if [ -L "$HOME/.ssh/lab-smoke" ] || [ -L "$HOME/.ssh/lab-smoke.pub" ]; then
   printf '%s\n' 'STOP: a Step 10 key path is a symlink.'
-  exit 1
+  return 1
 fi
 if [ -e "$HOME/.ssh/lab-smoke" ] && [ -e "$HOME/.ssh/lab-smoke.pub" ]; then
   printf '%s\n' 'Existing local Step 10 keypair found; it will be verified and reused.'
@@ -222,8 +239,14 @@ elif [ ! -e "$HOME/.ssh/lab-smoke" ] && [ ! -e "$HOME/.ssh/lab-smoke.pub" ]; the
   ssh-keygen -t ed25519 -f "$HOME/.ssh/lab-smoke" -C lab-smoke
 else
   printf '%s\n' 'STOP: only one local Step 10 key file exists; inspect before continuing.'
-  exit 1
+  return 1
 fi
+}
+
+if ! guide_block_03; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_03
 ```
 
 Verify the local key before creating or reusing the cloud keypair:
@@ -238,20 +261,27 @@ printf 'Local key fingerprint: %s\n' "$LOCAL_KEYPAIR_FP"
 Use the same cloud keypair only when its fingerprint matches the local public key. Create it only when the name is absent:
 
 ```bash
+guide_block_04() {
 if KEYPAIR_LOOKUP_OUTPUT="$(openstack keypair show lab-smoke-key 2>&1)"; then
-  CLOUD_KEYPAIR_FP="$(openstack keypair show lab-smoke-key -f value -c fingerprint)" || exit 1
+  CLOUD_KEYPAIR_FP="$(openstack keypair show lab-smoke-key -f value -c fingerprint)" || return 1
   if [ "$CLOUD_KEYPAIR_FP" != "$LOCAL_KEYPAIR_FP" ]; then
     printf 'STOP: cloud/local key fingerprint mismatch: %s != %s\n' "$CLOUD_KEYPAIR_FP" "$LOCAL_KEYPAIR_FP"
-    exit 1
+    return 1
   fi
   printf '%s\n' 'Cloud keypair exists and matches the local public key; reusing it.'
 elif printf '%s' "$KEYPAIR_LOOKUP_OUTPUT" | grep -Eqi 'not found|no keypair|could not be found'; then
-  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null || exit 1
+  openstack keypair create --public-key "$HOME/.ssh/lab-smoke.pub" lab-smoke-key >/dev/null || return 1
   printf '%s\n' 'Created cloud keypair lab-smoke-key.'
 else
   printf '%s\n' 'STOP: keypair lookup failed for a reason other than confirmed not-found.'
-  exit 1
+  return 1
 fi
+}
+
+if ! guide_block_04; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_04
 ```
 
 Verify the cloud keypair before creating the VM:
@@ -265,53 +295,67 @@ Do not regenerate a lost private key and assume it matches.
 Download CirrOS from its [official 0.6.3 release directory](https://download.cirros-cloud.net/0.6.3/); this x86-64 image is a disposable test image, **not production**. CirrOS has a publicly known default login and passwordless sudo: limit network exposure and remove the test VM when no longer needed. Its [publisher](https://github.com/cirros-dev/cirros) documents the guest user `cirros`.
 
 ```bash
+guide_block_05() {
 mkdir -m 700 -p "$HOME/images"
 cd "$HOME/images"
 if [ -L cirros-0.6.3-x86_64-disk.img ] || [ -d cirros-0.6.3-x86_64-disk.img ]; then
   printf '%s\n' 'STOP: image path is a symlink or directory.'
-  exit 1
+  return 1
 fi
 if [ ! -f cirros-0.6.3-x86_64-disk.img ]; then
-  tmp_image="$(mktemp "$HOME/images/.cirros-image.XXXXXX")" || exit 1
+  tmp_image="$(mktemp "$HOME/images/.cirros-image.XXXXXX")" || return 1
   if ! curl --fail --location --proto '=https' --tlsv1.2 \
       --output "$tmp_image" \
       https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img; then
     rm -f -- "$tmp_image"
-    exit 1
+    return 1
   fi
   if [ -e cirros-0.6.3-x86_64-disk.img ]; then
     rm -f -- "$tmp_image"
     printf '%s\n' 'STOP: image appeared during download; inspect both files.'
-    exit 1
+    return 1
   fi
   mv -- "$tmp_image" cirros-0.6.3-x86_64-disk.img
 fi
 stat -c '%n owner=%U mode=%a size=%s' cirros-0.6.3-x86_64-disk.img
+}
+
+if ! guide_block_05; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_05
 ```
 
 If the checksum file is absent, download it to a temporary file and move it into place only after the transfer succeeds:
 
 ```bash
+guide_block_06() {
 cd "$HOME/images"
 if [ -L cirros-0.6.3-SHA256SUMS ] || [ -d cirros-0.6.3-SHA256SUMS ]; then
   printf '%s\n' 'STOP: checksum path is a symlink or directory.'
-  exit 1
+  return 1
 fi
 if [ ! -f cirros-0.6.3-SHA256SUMS ]; then
-  tmp_sums="$(mktemp "$HOME/images/.cirros-sums.XXXXXX")" || exit 1
+  tmp_sums="$(mktemp "$HOME/images/.cirros-sums.XXXXXX")" || return 1
   if ! curl --fail --location --proto '=https' --tlsv1.2 \
       --output "$tmp_sums" \
       https://download.cirros-cloud.net/0.6.3/SHA256SUMS; then
     rm -f -- "$tmp_sums"
-    exit 1
+    return 1
   fi
   if [ -e cirros-0.6.3-SHA256SUMS ]; then
     rm -f -- "$tmp_sums"
     printf '%s\n' 'STOP: checksum file appeared during download; inspect both files.'
-    exit 1
+    return 1
   fi
   mv -- "$tmp_sums" cirros-0.6.3-SHA256SUMS
 fi
+}
+
+if ! guide_block_06; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_06
 ```
 
 Verify exactly the intended image checksum:
@@ -331,28 +375,34 @@ Run **one resource command at a time**. After each successful create, record the
 Before the first create, run this collision check. The network, subnet, flavor, image and VM names must be absent. A pre-existing `lab-vm-access` group is handled separately in sub-step E and must be compatible before reuse:
 
 ```bash
-set -e
-NETWORK_MATCHES="$(openstack network list --name lab-private -f value -c ID)" || exit 1
-[ -z "$NETWORK_MATCHES" ] || { printf '%s\n' 'STOP: lab-private already exists.'; exit 1; }
-SUBNET_MATCHES="$(openstack subnet list --name lab-private-subnet -f value -c ID)" || exit 1
-[ -z "$SUBNET_MATCHES" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; exit 1; }
-FLAVORS_JSON="$(openstack flavor list -f json)" || exit 1
+guide_block_07() {
+NETWORK_MATCHES="$(openstack network list --name lab-private -f value -c ID)" || return 1
+[ -z "$NETWORK_MATCHES" ] || { printf '%s\n' 'STOP: lab-private already exists.'; return 1; }
+SUBNET_MATCHES="$(openstack subnet list --name lab-private-subnet -f value -c ID)" || return 1
+[ -z "$SUBNET_MATCHES" ] || { printf '%s\n' 'STOP: lab-private-subnet already exists.'; return 1; }
+FLAVORS_JSON="$(openstack flavor list -f json)" || return 1
 if printf '%s\n' "$FLAVORS_JSON" | python3 -c 'import json,sys; n="lab.tiny"; rows=json.load(sys.stdin); raise SystemExit(0 if any((r.get("Name") or r.get("name"))==n for r in rows) else 1)'; then
   printf '%s\n' 'STOP: lab.tiny already exists.'
-  exit 1
+  return 1
 fi
-IMAGE_MATCHES="$(openstack image list --name lab-test-image -f value -c ID)" || exit 1
-[ -z "$IMAGE_MATCHES" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; exit 1; }
-SECURITY_GROUPS_JSON="$(openstack security group list -f json)" || exit 1
+IMAGE_MATCHES="$(openstack image list --name lab-test-image -f value -c ID)" || return 1
+[ -z "$IMAGE_MATCHES" ] || { printf '%s\n' 'STOP: lab-test-image already exists.'; return 1; }
+SECURITY_GROUPS_JSON="$(openstack security group list -f json)" || return 1
 MATCHING_SECURITY_GROUPS="$(printf '%s\n' "$SECURITY_GROUPS_JSON" | python3 -c 'import json,sys; n="lab-vm-access"; rows=json.load(sys.stdin); print("\n".join(str(r.get("ID") or r.get("id")) for r in rows if (r.get("Name") or r.get("name"))==n))')"
 if [ -n "$MATCHING_SECURITY_GROUPS" ]; then
   printf 'NOTE: lab-vm-access exists and will be inspected for compatible reuse: %s\n' "$MATCHING_SECURITY_GROUPS"
 else
   printf '%s\n' 'No existing lab-vm-access group; Step 10E will create it.'
 fi
-VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || exit 1
-[ -z "$VM_MATCHES" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; exit 1; }
+VM_MATCHES="$(openstack server list --all-projects --name lab-smoke -f value -c ID)" || return 1
+[ -z "$VM_MATCHES" ] || { printf '%s\n' 'STOP: lab-smoke already exists.'; return 1; }
 printf '%s\n' 'Step 10 resource creation path is clear; security-group reuse will be checked separately.'
+}
+
+if ! guide_block_07; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_07
 ```
 
 **Pass when:** all inspection commands succeed, the network/subnet/flavor/image/VM names are absent, and any existing security group is explicitly identified for compatibility review. **Stop if:** any command fails or any non-security-group target already exists.
@@ -360,9 +410,16 @@ printf '%s\n' 'Step 10 resource creation path is clear; security-group reuse wil
 **A — Create and verify the private network:**
 
 ```bash
-PRIVATE_NET_ID="$(openstack network create lab-private -f value -c id)" || exit 1
+guide_block_08() {
+PRIVATE_NET_ID="$(openstack network create lab-private -f value -c id)" || return 1
 printf 'PRIVATE_NET_ID=%s\n' "$PRIVATE_NET_ID"
 openstack network show "$PRIVATE_NET_ID" -c id -c name -c status -c subnets
+}
+
+if ! guide_block_08; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_08
 ```
 
 **Pass when:** the ID, name `lab-private` and `ACTIVE` status are shown. **Stop if:** the network already exists, the command fails, or the ID is ambiguous.
@@ -370,14 +427,21 @@ openstack network show "$PRIVATE_NET_ID" -c id -c name -c status -c subnets
 **B — Create and verify the private subnet:**
 
 ```bash
+guide_block_09() {
 PRIVATE_SUBNET_ID="$(openstack subnet create \
   --network "$PRIVATE_NET_ID" \
   --subnet-range 10.254.211.0/24 \
   --dhcp \
   lab-private-subnet \
-  -f value -c id)" || exit 1
+  -f value -c id)" || return 1
 printf 'PRIVATE_SUBNET_ID=%s\n' "$PRIVATE_SUBNET_ID"
 openstack subnet show "$PRIVATE_SUBNET_ID" -c id -c name -c network_id -c cidr -c enable_dhcp
+}
+
+if ! guide_block_09; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_09
 ```
 
 **Pass when:** the subnet is attached to `PRIVATE_NET_ID`, uses `10.254.211.0/24`, and DHCP is enabled. **Stop if:** the CIDR overlaps, the network ID differs, or the subnet already exists.
@@ -385,22 +449,36 @@ openstack subnet show "$PRIVATE_SUBNET_ID" -c id -c name -c network_id -c cidr -
 **C — Create and verify the flavor:**
 
 ```bash
-FLAVOR_ID="$(openstack flavor create lab.tiny --vcpus 1 --ram 512 --disk 1 -f value -c id)" || exit 1
+guide_block_10() {
+FLAVOR_ID="$(openstack flavor create lab.tiny --vcpus 1 --ram 512 --disk 1 -f value -c id)" || return 1
 printf 'FLAVOR_ID=%s\n' "$FLAVOR_ID"
 openstack flavor show "$FLAVOR_ID" -c id -c name -c vcpus -c ram -c disk
+}
+
+if ! guide_block_10; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_10
 ```
 
 **D — Upload and verify the test image:**
 
 ```bash
+guide_block_11() {
 IMAGE_ID="$(openstack image create lab-test-image \
   --file "$HOME/images/cirros-0.6.3-x86_64-disk.img" \
   --disk-format qcow2 \
   --container-format bare \
   --private \
-  -f value -c id)" || exit 1
+  -f value -c id)" || return 1
 printf 'IMAGE_ID=%s\n' "$IMAGE_ID"
 openstack image show "$IMAGE_ID" -c id -c name -c status -c visibility
+}
+
+if ! guide_block_11; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_11
 ```
 
 **Pass when:** image status is `active` and visibility is `private`. **Stop if:** the upload fails, status is not `active`, or the image name already belongs to another object.
@@ -410,39 +488,54 @@ openstack image show "$IMAGE_ID" -c id -c name -c status -c visibility
 A security group may already exist from an earlier attempt. Check before creating it and require exactly zero or one match:
 
 ```bash
-GROUP_IDS_OUTPUT="$(openstack security group list --name lab-vm-access -f value -c ID)" || exit 1
+guide_block_12() {
+GROUP_IDS_OUTPUT="$(openstack security group list --name lab-vm-access -f value -c ID)" || return 1
 GROUP_IDS=()
 if [ -n "$GROUP_IDS_OUTPUT" ]; then
   mapfile -t GROUP_IDS <<< "$GROUP_IDS_OUTPUT"
 fi
 if [ "${#GROUP_IDS[@]}" -gt 1 ]; then
   printf 'STOP: more than one lab-vm-access group matched.\n'
-  exit 1
+  return 1
 elif [ "${#GROUP_IDS[@]}" -eq 1 ]; then
   ACCESS_GROUP_ID="${GROUP_IDS[0]}"
 else
-  ACCESS_GROUP_ID="$(openstack security group create lab-vm-access -f value -c id)" || exit 1
+  ACCESS_GROUP_ID="$(openstack security group create lab-vm-access -f value -c id)" || return 1
 fi
 printf 'ACCESS_GROUP_ID=%s\n' "$ACCESS_GROUP_ID"
 openstack security group show "$ACCESS_GROUP_ID" -c id -c name -c project_id
+}
+
+if ! guide_block_12; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_12
 ```
 
 Select the actual IPv4 address of the client that will test the VM. Account for NAT; do not type the literal placeholder and do not use `0.0.0.0/0` for convenience. Set the resulting CIDR only after verifying the source address:
 
 ```bash
+guide_block_13() {
 ip -4 route get 192.168.0.150
 read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
 if ! python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$TRUSTED_CLIENT_IP"; then
   printf '%s\n' 'STOP: enter a valid IPv4 address with octets from 0 to 255.'
-  exit 1
+  return 1
 fi
 TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
 printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
+}
+
+if ! guide_block_13; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_13
 ```
 
 Before creating ingress rules, inspect the current list and reuse an exact existing rule. This avoids duplicate-rule errors when a partially completed run is resumed:
 
 ```bash
+guide_block_14() {
 rule_id() {
   local protocol="$1" port="$2" rules_json
   rules_json="$(openstack security group rule list "$ACCESS_GROUP_ID" -f json)" || return 1
@@ -467,29 +560,35 @@ for row in rows:
 ' "$protocol" "$port" "$TRUSTED_CIDR"
 }
 
-SSH_RULE_ID="$(rule_id tcp 22)" || exit 1
+SSH_RULE_ID="$(rule_id tcp 22)" || return 1
 if [ -n "$SSH_RULE_ID" ]; then
   printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
 else
   SSH_RULE_ID="$(openstack security group rule create \
     --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
     --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-    -f value -c id)" || exit 1
+    -f value -c id)" || return 1
   printf 'Created SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
 fi
 openstack security group rule show "$SSH_RULE_ID"
 
-ICMP_RULE_ID="$(rule_id icmp '')" || exit 1
+ICMP_RULE_ID="$(rule_id icmp '')" || return 1
 if [ -n "$ICMP_RULE_ID" ]; then
   printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 else
   ICMP_RULE_ID="$(openstack security group rule create \
     --ingress --ethertype IPv4 --protocol icmp \
     --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-    -f value -c id)" || exit 1
+    -f value -c id)" || return 1
   printf 'Created ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 fi
 openstack security group rule show "$ICMP_RULE_ID"
+}
+
+if ! guide_block_14; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_14
 ```
 
 Verify the complete group before creating the VM:
@@ -513,6 +612,7 @@ VM_NAME='lab-smoke'
 Recheck `openstack server list --all-projects` for the chosen name before boot. Use the verified IDs recorded in Step 10D rather than names. The fresh create explicitly supplies only the dedicated security group and keypair:
 
 ```bash
+guide_block_15() {
 VM_ID="$(openstack server create "$VM_NAME" \
   --flavor "$FLAVOR_ID" \
   --image "$IMAGE_ID" \
@@ -520,10 +620,16 @@ VM_ID="$(openstack server create "$VM_NAME" \
   --security-group "$ACCESS_GROUP_ID" \
   --key-name lab-smoke-key \
   --wait \
-  -f value -c id)" || exit 1
+  -f value -c id)" || return 1
 printf 'VM_ID=%s\n' "$VM_ID"
 openstack server show "$VM_ID" -c id -c status -c addresses -c key_name
 openstack port list --server "$VM_ID" --long
+}
+
+if ! guide_block_15; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_15
 ```
 
 **Pass when:** the create command returns a server ID and the ID lookup succeeds. **Stop if:** the command fails, the server enters `ERROR`, or the server ID is missing. If the command result is uncertain, inspect `openstack server list --all-projects --name "$VM_NAME"` before retrying; do not create another VM by name.
@@ -548,17 +654,24 @@ Select the intended port from the output; inspect it, record its original securi
 Discover the selected VM port and its fixed IP from the verified server. This expects exactly one port and one fixed IP; stop if the VM has multiple ports or addresses and inspect them manually:
 
 ```bash
+guide_block_16() {
 mapfile -t VM_PORT_IDS < <(openstack port list --server "$VM_ID" -f value -c ID)
 if [ "${#VM_PORT_IDS[@]}" -ne 1 ]; then
   printf 'STOP: expected exactly one VM port; found %s.\n' "${#VM_PORT_IDS[@]}"
-  exit 1
+  return 1
 fi
 VM_PORT="${VM_PORT_IDS[0]}"
-PORT_JSON="$(openstack port show "$VM_PORT" -f json)" || exit 1
-PORT_VALUES="$(printf '%s\n' "$PORT_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=d.get("fixed_ips", []); raise SystemExit("expected exactly one fixed IP") if len(f) != 1 else print(f[0]["ip_address"], f[0]["subnet_id"])')" || exit 1
+PORT_JSON="$(openstack port show "$VM_PORT" -f json)" || return 1
+PORT_VALUES="$(printf '%s\n' "$PORT_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=d.get("fixed_ips", []); raise SystemExit("expected exactly one fixed IP") if len(f) != 1 else print(f[0]["ip_address"], f[0]["subnet_id"])')" || return 1
 read -r FIXED_IP PRIVATE_SUBNET_ID <<< "$PORT_VALUES"
 printf 'VM_PORT=%s\nFIXED_IP=%s\nPRIVATE_SUBNET_ID=%s\n' "$VM_PORT" "$FIXED_IP" "$PRIVATE_SUBNET_ID"
 openstack port show "$VM_PORT"
+}
+
+if ! guide_block_16; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_16
 ```
 
 Choose the resource path before running any create command. Each resource has a separate existing-resource branch and new-resource branch. Never run a create command in the existing-resource branch.
@@ -566,13 +679,14 @@ Choose the resource path before running any create command. Each resource has a 
 **A — Identify or create the external network:**
 
 ```bash
+guide_block_17() {
 mapfile -t EXT_NET_IDS < <(openstack network list --name lab-external -f value -c ID)
 if [ "${#EXT_NET_IDS[@]}" -gt 1 ]; then
   printf '%s\n' 'STOP: more than one lab-external network matched.'
-  exit 1
+  return 1
 elif [ "${#EXT_NET_IDS[@]}" -eq 1 ]; then
   EXT_NET_ID="${EXT_NET_IDS[0]}"
-  NETWORK_JSON="$(openstack network show "$EXT_NET_ID" -f json)" || exit 1
+  NETWORK_JSON="$(openstack network show "$EXT_NET_ID" -f json)" || return 1
   printf '%s\n' "$NETWORK_JSON" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -589,11 +703,17 @@ else
     --provider-network-type flat \
     --provider-physical-network physnet1 \
     lab-external \
-    -f value -c id)" || exit 1
+    -f value -c id)" || return 1
   printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
   openstack network show "$EXT_NET_ID"
 fi
 printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
+}
+
+if ! guide_block_17; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_17
 ```
 
 **Pass when:** exactly one `lab-external` network is present and its status is `ACTIVE`, external flag is true, provider type is `flat`, and provider physical network is `physnet1`. **Stop if:** it is missing, duplicated, or incompatible. Do not repair an incompatible existing network inside this learning step; stop and review it separately.
@@ -601,10 +721,11 @@ printf 'EXT_NET_ID=%s\n' "$EXT_NET_ID"
 **B — Identify or create the external subnet:**
 
 ```bash
+guide_block_18() {
 mapfile -t EXT_SUBNET_IDS < <(openstack subnet list --name lab-external-subnet -f value -c ID)
 if [ "${#EXT_SUBNET_IDS[@]}" -gt 1 ]; then
   printf '%s\n' 'STOP: more than one lab-external-subnet matched.'
-  exit 1
+  return 1
 elif [ "${#EXT_SUBNET_IDS[@]}" -eq 1 ]; then
   EXT_SUBNET_ID="${EXT_SUBNET_IDS[0]}"
   openstack subnet show "$EXT_SUBNET_ID" -c id -c name -c network_id -c cidr -c gateway_ip -c enable_dhcp -c allocation_pools
@@ -616,11 +737,17 @@ else
     --allocation-pool start=192.168.0.151,end=192.168.0.199 \
     --no-dhcp \
     lab-external-subnet \
-    -f value -c id)" || exit 1
+    -f value -c id)" || return 1
   printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
   openstack subnet show "$EXT_SUBNET_ID" -c id -c name -c network_id -c cidr -c gateway_ip -c enable_dhcp -c allocation_pools
 fi
 printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
+}
+
+if ! guide_block_18; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_18
 ```
 
 **Pass when:** exactly one subnet is present, attached to `EXT_NET_ID`, uses `192.168.0.0/24`, gateway `192.168.0.1`, allocation pool `192.168.0.151–192.168.0.199`, and DHCP is disabled. **Stop if:** any value differs. Do not modify an incompatible existing subnet here.
@@ -628,19 +755,26 @@ printf 'EXT_SUBNET_ID=%s\n' "$EXT_SUBNET_ID"
 **C — Identify or create the router:**
 
 ```bash
+guide_block_19() {
 mapfile -t ROUTER_IDS < <(openstack router list --name lab-router -f value -c ID)
 if [ "${#ROUTER_IDS[@]}" -gt 1 ]; then
   printf '%s\n' 'STOP: more than one lab-router matched.'
-  exit 1
+  return 1
 elif [ "${#ROUTER_IDS[@]}" -eq 1 ]; then
   ROUTER_ID="${ROUTER_IDS[0]}"
   openstack router show "$ROUTER_ID"
 else
-  ROUTER_ID="$(openstack router create lab-router -f value -c id)" || exit 1
+  ROUTER_ID="$(openstack router create lab-router -f value -c id)" || return 1
   printf 'ROUTER_ID=%s\n' "$ROUTER_ID"
   openstack router show "$ROUTER_ID"
 fi
 printf 'ROUTER_ID=%s\n' "$ROUTER_ID"
+}
+
+if ! guide_block_19; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_19
 ```
 
 **Pass when:** exactly one router is identified and its dependencies are understood. **Stop if:** the router is shared, has an unexpected gateway or interface, or its ownership is unclear. Do not mutate an existing/shared router in this learning step.
@@ -700,13 +834,20 @@ For a fresh VM, use the dedicated group created and verified in Step 10D. For an
 Enter the verified security-group UUID from the previous inspection; do not type a placeholder:
 
 ```bash
+guide_block_20() {
 read -r -p 'Enter verified security-group UUID: ' ACCESS_GROUP_ID
 if [[ ! "$ACCESS_GROUP_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
   printf '%s\n' 'STOP: the security-group ID is not a UUID.'
-  exit 1
+  return 1
 fi
 openstack security group show "$ACCESS_GROUP_ID" -c id -c name -c project_id
 openstack security group rule list "$ACCESS_GROUP_ID"
+}
+
+if ! guide_block_20; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_20
 ```
 
 If no suitable group exists, stop and create a separate dedicated group only after approval. Record its returned ID, then rerun the verification above. Never put the literal placeholder into a command.
@@ -716,19 +857,27 @@ If no suitable group exists, stop and create a separate dedicated group only aft
 Select the actual IPv4 address of the client that will test the floating IP, accounting for NAT. Do not use the API VIP, the floating-IP pool, or `0.0.0.0/0` as the source. Set this only after verifying the source address:
 
 ```bash
+guide_block_21() {
 ip -4 route get 192.168.0.150
 read -r -p 'Enter the verified trusted-client IPv4 address: ' TRUSTED_CLIENT_IP
 if ! python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$TRUSTED_CLIENT_IP"; then
   printf '%s\n' 'STOP: enter a valid IPv4 address with octets from 0 to 255.'
-  exit 1
+  return 1
 fi
 TRUSTED_CIDR="${TRUSTED_CLIENT_IP}/32"
 printf 'Using trusted source CIDR: %s\n' "$TRUSTED_CIDR"
+}
+
+if ! guide_block_21; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_21
 ```
 
 Inspect the verified group and reuse an exact existing rule. This block adds only missing rules:
 
 ```bash
+guide_block_22() {
 rule_id() {
   local protocol="$1" port="$2" rules_json
   rules_json="$(openstack security group rule list "$ACCESS_GROUP_ID" -f json)" || return 1
@@ -753,34 +902,40 @@ for row in rows:
 ' "$protocol" "$port" "$TRUSTED_CIDR"
 }
 
-ICMP_RULE_ID="$(rule_id icmp '')" || exit 1
+ICMP_RULE_ID="$(rule_id icmp '')" || return 1
 if [ -n "$ICMP_RULE_ID" ]; then
   printf 'Reusing existing ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 else
   ICMP_RULE_ID="$(openstack security group rule create \
     --ingress --ethertype IPv4 --protocol icmp \
     --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-    -f value -c id)" || exit 1
+    -f value -c id)" || return 1
   printf 'Created ICMP_RULE_ID=%s\n' "$ICMP_RULE_ID"
 fi
 openstack security group rule show "$ICMP_RULE_ID"
 
 read -r -p 'Create or reuse the approved SSH rule now? Type YES to continue: ' SSH_APPROVAL
 if [ "$SSH_APPROVAL" = 'YES' ]; then
-  SSH_RULE_ID="$(rule_id tcp 22)" || exit 1
+  SSH_RULE_ID="$(rule_id tcp 22)" || return 1
   if [ -n "$SSH_RULE_ID" ]; then
     printf 'Reusing existing SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
   else
     SSH_RULE_ID="$(openstack security group rule create \
       --ingress --ethertype IPv4 --protocol tcp --dst-port 22 \
       --remote-ip "$TRUSTED_CIDR" "$ACCESS_GROUP_ID" \
-      -f value -c id)" || exit 1
+      -f value -c id)" || return 1
     printf 'Created SSH_RULE_ID=%s\n' "$SSH_RULE_ID"
   fi
   openstack security group rule show "$SSH_RULE_ID"
 else
   printf '%s\n' 'SSH rule not changed.'
 fi
+}
+
+if ! guide_block_22; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_22
 ```
 
 Verify the complete group and port state:
@@ -804,8 +959,15 @@ This adds a group without removing existing groups. Compare the port's complete 
 Allocate exactly one floating IP from the verified pool and capture its returned ID:
 
 ```bash
-FIP_ID="$(openstack floating ip create --subnet "$EXT_SUBNET_ID" "$EXT_NET_ID" -f value -c id)" || exit 1
+guide_block_23() {
+FIP_ID="$(openstack floating ip create --subnet "$EXT_SUBNET_ID" "$EXT_NET_ID" -f value -c id)" || return 1
 printf 'FIP_ID=%s\n' "$FIP_ID"
+}
+
+if ! guide_block_23; then
+  printf '%s\n' 'STOP: this check failed; the terminal is still open.'
+fi
+unset -f guide_block_23
 ```
 
 Stop here and verify that the returned address belongs to the approved pool and is not already assigned:
