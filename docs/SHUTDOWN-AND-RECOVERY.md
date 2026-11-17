@@ -11,7 +11,16 @@ This guide is for the current lab paths:
 - API VIP: `192.168.0.150`
 - Nodes: `node1`, `node2`, `node3`
 
-Reference tip: [DinosaurKeys/openstack-lab-guide shutdown and recovery guide](https://github.com/DinosaurKeys/openstack-lab-guide/blob/main/docs/SHUTDOWN-AND-RECOVERY.md). This guide is adapted to the current fresh-lab paths and release workflow; do not copy commands from another deployment without checking the inventory, container engine, paths and service placement.
+This guide is adapted to the current fresh-lab paths. The earlier [openstack-from-zero recovery guide](https://github.com/DinosaurKeys/openstack-from-zero/blob/main/docs/reboot-and-recovery.md) describes a different deployment; do not run its scripts unchanged here.
+
+## Quick recovery path
+
+1. Power on the nodes and check SSH and Docker (Section 3A).
+2. Check Galera (Section 4B). If it is healthy, **do not recover it**. If all members have lost the Primary component, follow the decision and recovery steps in Sections 4C–4D.
+3. Check RabbitMQ membership and each application (Sections 5 and 5A). A stopped application and a repeatedly restarting container require different actions. Do not repeat `start_app` when the container is cycling.
+4. Check the API, Placement, and service heartbeats (Section 5B). Do not call the cloud healthy until the database, broker, and required services pass separately.
+
+**Current known limitation:** this guide does not yet provide a verified one-command repair for a RabbitMQ quorum-queue log recovery timeout. Preserve the broker data and investigate that specific failure; do not delete its volume or reset the cluster as a shortcut.
 
 ## Safety rules
 
@@ -208,7 +217,7 @@ openstack network agent list
 
 **Pass when:** Keystone authentication succeeds, expected compute services are `up` and `enabled`, and expected network agents report alive. Continue to the database and broker checks below.
 
-**Stop if:** the API is unavailable, authentication fails, expected services are down, or a service is intentionally disabled but being treated as required.
+**If this check fails:** record the failure and continue to Sections 4 and 5 to check Galera and RabbitMQ. An unavailable API can be a consequence of an unhealthy dependency; do not repeat this API check instead of diagnosing the dependency. Do not count intentionally disabled services as required.
 
 ## 4. MariaDB/Galera decision after reboot
 
@@ -283,9 +292,9 @@ kolla-ansible mariadb-recovery \
   --passwords "$KOLLA_CONFIG_PATH/passwords.yml"
 ```
 
-The current lab uses passwordless sudo, so this command does not prompt. If become fails, stop and rerun the command in a visible terminal with `-K`; never put the password in the guide or chat. Stop on any recovery failure. Do not repeatedly run recovery and do not manually edit `grastate.dat`, delete database volumes, select a bootstrap node, or restart all MariaDB containers independently.
+The current lab uses passwordless sudo, so this command does not prompt. If become fails, stop; Kolla-Ansible does not accept Ansible's `-K` option. When supported by the installed release, use `ANSIBLE_BECOME_ASK_PASS=true` with a visible terminal prompt instead of the `false` setting above. Never put the password in the guide or chat. Stop on any recovery failure. Do not repeatedly run recovery and do not manually edit `grastate.dat`, delete database volumes, select a bootstrap node, or restart all MariaDB containers independently.
 
-After a successful recovery recap, repeat Sections 3C, 3D and 4B. Recovery is not complete until Galera and the OpenStack API are healthy.
+After a successful recovery recap, repeat Section 4B, then check RabbitMQ in Section 5 and the APIs and service heartbeats in Section 5B. Recovery is not complete until the required dependencies and APIs are healthy.
 
 ## 5. RabbitMQ check after reboot
 
@@ -317,15 +326,39 @@ ansible -i "$KOLLA_INVENTORY" rabbitmq -b \
 
 **Pass when:** every expected member reports that RabbitMQ is fully booted and running.
 
-**Stop if:** a member reports that the `rabbit` application is not running, even when its container and systemd unit are active. Review `cluster_status`, alarms and partitions first. Do not generically restart the broker. With separate approval for the exact affected node and after the cluster evidence is reviewed, the narrowly targeted recovery may be:
+**Stop if:** a member reports that the `rabbit` application is not running. First distinguish a stable container with a stopped application from a container that is repeatedly restarting. On R2D2, sample the state and systemd restart counter twice, 90 seconds apart:
 
 ```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_INVENTORY="$HOME/openstack-fresh/kolla/multinode"
+source "$KOLLA_VENV/bin/activate"
+
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
+  -a 'docker ps -a --filter name=^/rabbitmq$'
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
+  -a 'systemctl show kolla-rabbitmq-container.service -p ActiveState -p SubState -p NRestarts'
+sleep 90
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
+  -a 'docker ps -a --filter name=^/rabbitmq$'
+ansible -i "$KOLLA_INVENTORY" rabbitmq -b -m ansible.builtin.command \
+  -a 'systemctl show kolla-rabbitmq-container.service -p ActiveState -p SubState -p NRestarts'
+```
+
+An increasing `NRestarts` indicates a restart loop. A counter that does not increase in 90 seconds does not prove long-term stability; compare it over the actual observed restart interval. If the container is cycling, inspect the affected node's RabbitMQ application log and systemd events; do **not** repeat `start_app`, reset the node, or delete its volume. Logs can contain secrets; do not publish them. If the log shows a quorum-queue WAL/segment-writer timeout, the cause and safe remedy must be established before changing broker data.
+
+Only if the container is stable and the Rabbit application is stopped, review `cluster_status`, alarms, partitions and the impact first. With approval for the exact affected node, the targeted action may be:
+
+```bash
+export KOLLA_VENV="$HOME/.venvs/kolla-fresh"
+export KOLLA_INVENTORY="$HOME/openstack-fresh/kolla/multinode"
+source "$KOLLA_VENV/bin/activate"
+
 ansible -i "$KOLLA_INVENTORY" node2 -b \
   -m ansible.builtin.command \
   -a 'docker exec rabbitmq rabbitmqctl start_app'
 ```
 
-Replace `node2` only with the verified affected inventory alias. Re-run `check_running` and `cluster_status` before continuing. `start_app` is an incident-specific action, not a generic reboot procedure.
+Replace `node2` only with the verified affected inventory alias. A successful command is not recovery: recheck container stability, `check_running`, and `cluster_status` on all members. If the container exits or the application stops again, stop and investigate; do not repeat the command.
 
 ### 5B — Recheck Placement and dependent API health
 
