@@ -69,8 +69,8 @@ These values are drafts for this lab, not universal defaults. Being outside the 
 | [9. Deploy and verify](docs/02-deploy-openstack.md#step-9-deploy-and-validate) | Deploy the control plane and verify the reported APIs and agents. |
 | [Recovery after shutdown/reboot](docs/SHUTDOWN-AND-RECOVERY.md) | Perform read-only post-reboot checks, make an evidence-based recovery decision, and restart one approved service when required. |
 | [RabbitMQ queue cleanup](docs/RABBITMQ-QUEUE-CLEANUP.md) | Safely sample and delete one confirmed-empty Heat quorum queue. |
-| [10. First VM and client](docs/03-first-vm-and-network.md#step-10-create-the-first-test-vm) | Configure the OpenStack CLI client, then create and verify a private network, image, keypair and small VM one resource at a time. |
-| [11. Provider network and floating IP](docs/03-first-vm-and-network.md#step-11-connect-the-private-network-to-the-provider-lan) | Verify or create the external network, subnet and router in dependency order; then allocate and associate one floating IP and test each layer. |
+| [10. Build your first VM](docs/03-first-vm-and-network.md#step-10-build-one-private-test-vm) | Connect the CLI, then create and verify a private network, image, keypair and small VM one resource at a time. |
+| [11. Give the VM a floating IP](docs/03-first-vm-and-network.md#step-11-give-the-vm-a-floating-ip) | Check the provider network plan, then allocate, attach and test one floating IP. |
 | [12. Cinder storage](docs/04-storage-operations-extensions.md#step-12-plan-cinder-block-storage) | Inspect the existing SSDs and validate the LVM design before enabling storage. |
 | [13. Failure and HA testing](docs/04-storage-operations-extensions.md#step-13-ha-failure-testing-and-recovery) | Plan and explicitly approve a controlled failure exercise. |
 | [14. Terraform](docs/04-storage-operations-extensions.md#step-14-terraform-sandbox) | Learn infrastructure as code after the manual cloud tests. |
