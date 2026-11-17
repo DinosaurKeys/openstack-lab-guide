@@ -70,9 +70,10 @@ export KOLLA_INVENTORY="$KOLLA_CONFIG_PATH/multinode"
 source "$KOLLA_VENV/bin/activate"
 export OS_CLOUD=kolla-admin
 export OS_CLIENT_CONFIG_FILE="$HOME/.config/openstack/clouds.yaml"
+export K="-o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -i $HOME/.ssh/openstack_lab_ed25519"
 ```
 
-Every command below assumes this block has run. Passwordless sudo is configured, so no `-K` is needed. If become fails, stop.
+Every command below assumes this block has run. Passwordless sudo is configured, so no `-K` is needed. If become fails, stop. `$K` holds the SSH options used by the few checks that talk to a node directly.
 
 ---
 
@@ -154,7 +155,8 @@ ansible -i "$KOLLA_INVENTORY" control -m ansible.builtin.command -a 'ip -brief a
 ## Layer 2 — VIP owned by exactly one node
 
 ```bash
-for h in 200 201 202; do printf "node: "; ssh joe@192.168.0.$h 'ip -4 -o addr show | grep -c 192.168.0.150'; done
+K="-o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=6 -i ~/.ssh/openstack_lab_ed25519"
+for h in 200 201 202; do printf "node: "; ssh $K joe@192.168.0.$h 'ip -4 -o addr show | grep -c 192.168.0.150'; done
 ```
 
 **Pass:** exactly one `1`.
@@ -196,7 +198,7 @@ ansible -i "$KOLLA_INVENTORY" mariadb -b -m ansible.builtin.command \
 Then confirm it is actually **writable** — this is the check that matters:
 
 ```bash
-for h in 200 201 202; do ssh joe@192.168.0.$h 'sudo docker exec placement_api timeout 4 bash -c "cat </dev/null >/dev/tcp/192.168.0.150/3306" && echo "DB OK" || echo "DB FAIL"'; done
+for h in 200 201 202; do ssh $K joe@192.168.0.$h 'sudo docker exec placement_api timeout 4 bash -c "cat </dev/null >/dev/tcp/192.168.0.150/3306" && echo "DB OK" || echo "DB FAIL"'; done
 ```
 
 ### Recovery decision
@@ -325,17 +327,24 @@ Unit names change between Kolla releases. Always verify on the target node.
 
 ## 3B — The stale-worker fix (most common post-reboot fault)
 
-If the hosts booted before MariaDB was writable, these containers keep serving `500` while `systemctl` says `active` and Docker says `healthy`. Restart them, one node at a time:
+If the hosts booted before MariaDB was writable, these containers keep serving `500` while `systemctl` says `active` and Docker says `healthy`. **No amount of waiting fixes them — only a restart.**
+
+Prerequisite: Layer 4 passes (Galera 3/3 and the DB is writable). Restarting a client against a dead database only re-fails.
+
+Do **one node at a time**, and verify before moving on:
 
 ```bash
+# node1 first — then re-run Layer 6 before touching node2
 for u in placement_api nova_api nova_conductor nova_scheduler neutron_server; do
-  for h in 200 201 202; do
-    ssh joe@192.168.0.$h "sudo systemctl reset-failed kolla-${u}-container.service 2>/dev/null; sudo systemctl restart kolla-${u}-container.service"
-  done
+  ssh $K joe@192.168.0.200 "sudo systemctl reset-failed kolla-${u}-container.service 2>/dev/null; sudo systemctl restart kolla-${u}-container.service"
 done
 ```
 
-Then re-run Layer 6. Conductor and scheduler may be in a restart loop (`NRestarts` in the hundreds) — `reset-failed` clears the limit so they can start.
+Repeat with `192.168.0.201` (node2), then `192.168.0.202` (node3). Each restart takes 15–25 seconds to become healthy.
+
+Conductor and scheduler are often in a restart loop with `NRestarts` in the hundreds — `reset-failed` clears the start-limit so they can start. Confirm `NRestarts` stops climbing before you continue.
+
+Then re-run Layer 6. All Placement backends and the VIP must return `200`.
 
 ## 3C — Run the Kolla readiness gate
 
